@@ -1,0 +1,28 @@
+# Environment
+.env
+
+# Output
+outputs/
+
+# Input files (keep only examples)
+*.xlsx
+*.xlsx:Zone.Identifier
+inputs/
+
+# Node
+node_modules/
+yarn.lock
+package-lock.json
+bun.lock
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Logs
+*.log
+
+# Test output
+test-output/
+Sprint*

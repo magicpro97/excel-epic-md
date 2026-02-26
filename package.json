@@ -1,0 +1,26 @@
+{
+  "name": "excel-epic-md",
+  "version": "1.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "scripts": {
+    "start": "bun cli.mjs",
+    "render": "bun scripts/render.mjs",
+    "ocr": "python3 scripts/ocr.py",
+    "synthesize": "bun scripts/synthesize.mjs",
+    "assemble": "bun scripts/assemble.mjs"
+  },
+  "dependencies": {
+    "bottleneck": "^2.19.5",
+    "dotenv": "^16.5.0",
+    "exceljs": "^4.4.0",
+    "execa": "^9.6.1",
+    "jaison": "^2.1.1",
+    "jsonrepair": "^3.13.2",
+    "p-retry": "^7.1.1",
+    "sharp": "^0.34.5",
+    "which": "^6.0.0",
+    "yargs": "^18.0.0"
+  }
+}

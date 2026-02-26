@@ -1,0 +1,9 @@
+# excel-epic-md Python dependencies
+# Install: uv pip install -r requirements.txt --python .venv/bin/python
+
+# OCR
+paddleocr
+paddlepaddle
+
+# Table detection
+img2table
