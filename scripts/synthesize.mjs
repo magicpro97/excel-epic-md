@@ -2291,9 +2291,12 @@ NGUYÊN TẮC BẮT BUỘC:
    - Ví dụ: "傷病者一覧 (Danh sách bệnh nhân)", "現在地へ (Đến vị trí hiện tại)"
    - Mục đích: Dễ dàng mapping với UI thực tế khi implement
 6. Format JSON theo schema yêu cầu
-7. QUAN TRỌNG - Giữ nguyên cấu trúc BẢNG trong tài liệu:
+7. QUAN TRỌNG - Giữ nguyên cấu trúc BẢNG trong tài liệu (SONG NGỮ):
    - Khi phát hiện bảng (table), PHẢI giữ nguyên format bảng markdown
-   - Giữ nguyên header tiếng Nhật gốc, có thể thêm dịch tiếng Việt trong ngoặc nếu cần
+   - Header bảng: Giữ tiếng Nhật gốc + dịch tiếng Việt trong ngoặc
+     Ví dụ: "列名 (Tên cột)" | "入力チェック (Kiểm tra đầu vào)"
+   - Nội dung cell: Giữ tiếng Nhật gốc + dịch tiếng Việt trong ngoặc
+     Ví dụ: "そのまま出力 (Xuất nguyên trạng)" | "エラーとする (Báo lỗi)"
    - KHÔNG được chuyển bảng thành văn bản mô tả (narrative text)
    - Ví dụ bảng cần giữ: TSV specification, field mapping, error check rules, import/export format
    - Với bảng phức tạp có merged cells, tách thành nhiều bảng con nếu cần để hiển thị đúng trong markdown`;
@@ -2310,19 +2313,25 @@ Phân tích nội dung OCR từ trang ${pageNumber} của tài liệu yêu cầu
 
 ## OCR Blocks (Evidence Source)
 ${blocks.map((b) => `- [${b.evidenceId}] ${b.text}${b.isAmbiguous ? ' ⚠️ (confidence < 0.7)' : ''}`).join('\n')}
-${tables.length > 0 ? `
+${
+  tables.length > 0
+    ? `
 ## Detected Tables (img2table)
 Dưới đây là các bảng được phát hiện tự động từ hình ảnh. Sử dụng dữ liệu này để reconstruct bảng spec chính xác.
-${tables.map((t) => {
-  const header = t.content[0] || [];
-  const dataRows = t.content.slice(1);
-  const headerRow = `| ${header.join(' | ')} |`;
-  const separatorRow = `| ${header.map(() => '---').join(' | ')} |`;
-  const dataRowsStr = dataRows.map((r) => `| ${r.join(' | ')} |`).join('\n');
-  const md = `${headerRow}\n${separatorRow}\n${dataRowsStr}`;
-  return `### Table [${t.evidenceId}] (${t.rows}x${t.cols})\n${md}`;
-}).join('\n\n')}
-` : ''}
+${tables
+  .map((t) => {
+    const header = t.content[0] || [];
+    const dataRows = t.content.slice(1);
+    const headerRow = `| ${header.join(' | ')} |`;
+    const separatorRow = `| ${header.map(() => '---').join(' | ')} |`;
+    const dataRowsStr = dataRows.map((r) => `| ${r.join(' | ')} |`).join('\n');
+    const md = `${headerRow}\n${separatorRow}\n${dataRowsStr}`;
+    return `### Table [${t.evidenceId}] (${t.rows}x${t.cols})\n${md}`;
+  })
+  .join('\n\n')}
+`
+    : ''
+}
 
 ## Yêu cầu
 Trích xuất thông tin có cấu trúc từ nội dung trên.
@@ -2371,8 +2380,10 @@ Trích xuất thông tin có cấu trúc từ nội dung trên.
 
 QUAN TRỌNG: 
 - Mỗi thông tin PHẢI kèm Evidence ID. Không có Evidence = không ghi.
-- BẢNG: Khi phát hiện bảng trong tài liệu, PHẢI giữ nguyên cấu trúc markdown table trong field "tables". 
-  Giữ header tiếng Nhật gốc, không chuyển bảng thành text mô tả.
+- BẢNG: Khi phát hiện bảng trong tài liệu, PHẢI giữ nguyên cấu trúc markdown table trong field "tables".
+  Header và nội dung cell phải SONG NGỮ: giữ tiếng Nhật gốc + dịch tiếng Việt trong ngoặc.
+  Ví dụ: "列名 (Tên cột)" | "そのまま出力 (Xuất nguyên trạng)"
+  KHÔNG chuyển bảng thành text mô tả.
 `;
 
 /**
@@ -2447,7 +2458,9 @@ QUAN TRỌNG:
 2. Mỗi phần tử tương ứng với 1 trang, theo thứ tự trong input
 3. Nếu trang trống, dùng pageType: "empty" và extractedInfo: {}
 4. Mỗi thông tin PHẢI kèm Evidence ID từ OCR blocks
-5. BẢNG: Khi phát hiện bảng, PHẢI giữ cấu trúc markdown table trong field "tables". Giữ header tiếng Nhật gốc.
+5. BẢNG: Khi phát hiện bảng, PHẢI giữ cấu trúc markdown table trong field "tables".
+   Header và nội dung cell phải SONG NGỮ: giữ tiếng Nhật gốc + dịch tiếng Việt trong ngoặc.
+   Ví dụ: "更新範囲 (Phạm vi cập nhật)" | "確認結果 (Kết quả xác nhận)"
 `;
 
 /**
@@ -2527,8 +2540,10 @@ NGUYÊN TẮC VIẾT:
 4. Sắp xếp requirements theo priority (high → medium → low)
 5. Thông tin mâu thuẫn → đưa vào Open Questions
 6. Nếu thiếu thông tin → ghi "Cần bổ sung thêm thông tin"
-7. QUAN TRỌNG: Giữ nguyên các bảng (specification table, mapping table, error check table) 
+7. QUAN TRỌNG: Giữ nguyên các bảng (specification table, mapping table, error check table)
    dưới dạng markdown table trong field "tables". KHÔNG được chuyển bảng thành văn bản mô tả.
+   Header và nội dung cell phải SONG NGỮ: giữ tiếng Nhật gốc + dịch tiếng Việt trong ngoặc.
+   Ví dụ: "更新範囲 (Phạm vi cập nhật)" | "そのまま出力 (Xuất nguyên trạng)" | "エラーとする (Báo lỗi)"
 `;
 
 /**

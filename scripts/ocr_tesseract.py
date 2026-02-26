@@ -15,7 +15,7 @@ import subprocess
 # Check for pytesseract
 try:
     import pytesseract
-    from PIL import Image
+    from PIL import Image, ImageEnhance, ImageFilter
 except ImportError:
     print("❌ Missing dependencies. Install with:")
     print("   uv pip install pytesseract Pillow")
@@ -151,10 +151,25 @@ def process_page(image_path, page_num, confidence_threshold=0.7, prefix=None, de
     if detect_tables_enabled:
         tables = detect_tables(image_path, page_num, prefix=prefix)
     
+    # --- Image preprocessing to improve OCR confidence ---
+    # 1. Convert to grayscale
+    img_processed = img.convert('L')
+    # 2. Mild contrast enhancement (too high blurs kanji strokes)
+    enhancer = ImageEnhance.Contrast(img_processed)
+    img_processed = enhancer.enhance(1.5)
+    # 3. Sharpen to make text edges clearer
+    img_processed = img_processed.filter(ImageFilter.SHARPEN)
+    # Note: MedianFilter removed - it blurs fine strokes of Japanese characters
+    
     # Get OCR data with bounding boxes and confidence
-    # Output format: tsv with level, page_num, block_num, par_num, line_num, word_num, 
-    #                left, top, width, height, conf, text
-    data = pytesseract.image_to_data(img, lang='jpn+eng+vie', output_type=pytesseract.Output.DICT)
+    # Use --psm 3 (auto) which works best for mixed spreadsheet layouts
+    # Remove 'vie' language to reduce confusion on Japanese documents
+    tesseract_config = r'--oem 3 --psm 3'
+    data = pytesseract.image_to_data(
+        img_processed, lang='jpn+eng',
+        config=tesseract_config,
+        output_type=pytesseract.Output.DICT
+    )
     
     blocks = []
     current_block = None
@@ -203,8 +218,13 @@ def process_page(image_path, page_num, confidence_threshold=0.7, prefix=None, de
         else:
             # Merge with current block
             current_block['text'] += ' ' + text
-            # Average confidence
-            current_block['confidence'] = (current_block['confidence'] + conf) / 2
+            # Use weighted average confidence by text length (longer words = more reliable)
+            total_len = sum(len(w['text']) for w in current_block['words']) + len(text)
+            if total_len > 0:
+                weighted_sum = sum(w['conf'] * len(w['text']) for w in current_block['words']) + conf * len(text)
+                current_block['confidence'] = weighted_sum / total_len
+            else:
+                current_block['confidence'] = (current_block['confidence'] + conf) / 2
             # Expand bbox
             current_block['bbox'] = [
                 min(current_block['bbox'][0], bbox[0]),
