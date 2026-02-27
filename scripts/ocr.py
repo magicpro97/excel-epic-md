@@ -64,43 +64,11 @@ except ImportError:
 
 try:
     from img2table.document import Image as Img2TableImage
+    from img2table.ocr import PaddleOCR as Img2TablePaddleOCR
     IMG2TABLE_AVAILABLE = True
 except ImportError:
     print("⚠️  img2table not installed. Table detection disabled. Run: uv pip install img2table")
     IMG2TABLE_AVAILABLE = False
-
-
-class PaddleOCRAdapter:
-    """
-    Adapter wrapping an existing PaddleOCR instance for use with img2table.
-    Avoids double model initialization: img2table reuses the same OCR engine
-    already loaded for text extraction.
-    """
-
-    def __init__(self, paddle_ocr_instance):
-        self._ocr = paddle_ocr_instance
-
-    def ocr_df(self, image):
-        """img2table calls this to get OCR results as a DataFrame."""
-        import pandas as pd
-        import numpy as np
-        from PIL import Image as PILImage
-
-        img_array = np.array(image) if isinstance(image, PILImage.Image) else image
-        result = self._ocr.ocr(img_array)
-        rows = []
-        if result and result[0]:
-            for line in result[0]:
-                bbox_pts, (text, conf) = line
-                xs = [p[0] for p in bbox_pts]
-                ys = [p[1] for p in bbox_pts]
-                x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
-                rows.append({
-                    "left": int(x1), "top": int(y1),
-                    "width": int(x2 - x1), "height": int(y2 - y1),
-                    "value": text, "confidence": float(conf),
-                })
-        return pd.DataFrame(rows, columns=["left", "top", "width", "height", "value", "confidence"])
 
 
 def parse_args():
@@ -138,7 +106,7 @@ def detect_tables(image_path, page_number, ocr_engine=None):
         return []
 
     try:
-        # ocr_engine must be passed from main() as a PaddleOCRAdapter instance.
+        # ocr_engine must be an img2table OCRInstance (e.g. Img2TablePaddleOCR).
         # If not provided, skip table detection gracefully.
         if ocr_engine is None:
             return []
@@ -422,11 +390,12 @@ def main():
     print("  🔧 Initializing PaddleOCR...")
     ocr = PaddleOCR(lang="japan")  # Japanese (also handles English)
 
-    # Wrap existing PaddleOCR instance for img2table (avoids loading the same models twice)
+    # Create img2table's own PaddleOCR instance for table detection
+    # (img2table requires its OCRInstance interface with .of() method)
     table_ocr_engine = None
     if detect_tables_enabled and IMG2TABLE_AVAILABLE:
-        print("  🔧 Initializing img2table OCR engine (reusing PaddleOCR instance)...")
-        table_ocr_engine = PaddleOCRAdapter(ocr)
+        print("  🔧 Initializing img2table OCR engine...")
+        table_ocr_engine = Img2TablePaddleOCR(lang="japan")
 
     # Find all page images
     page_files = sorted(pages_dir.glob("page-*.png"))

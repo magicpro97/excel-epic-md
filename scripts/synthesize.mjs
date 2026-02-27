@@ -319,7 +319,7 @@ class RunStats {
      */
     this.perModel = new Map();
 
-    /** @type {{ total: number, success: number, error: number, cached: number, empty: number, visionRetried: number, byType: Object<string,number> }} */
+    /** @type {{ total: number, success: number, error: number, cached: number, empty: number, visionRetried: number, byType: {[key: string]: number} }} */
     this.pageStats = {
       total: 0,
       success: 0,
@@ -335,8 +335,8 @@ class RunStats {
    * Record one LLM API call with its token usage.
    * @param {string} provider - Provider name (e.g. 'gemini', 'github-models')
    * @param {string} model - Model identifier string
-   * @param {number} [promptTokens=0] - Input token count
-   * @param {number} [completionTokens=0] - Output token count
+   * @param {number} [promptTokens] - Input token count
+   * @param {number} [completionTokens] - Output token count
    */
   trackRequest(provider, model, promptTokens = 0, completionTokens = 0) {
     const key = `${provider}::${model}`;
@@ -375,10 +375,13 @@ class RunStats {
 
   /**
    * Get aggregated totals across all providers.
-   * @returns {{ requests: number, promptTokens: number, completionTokens: number, totalTokens: number, costUsd: number }}
+   * @returns {{ requests: number, promptTokens: number, completionTokens: number, totalTokens: number, costUsd: number }} Aggregated totals
    */
   getTotals() {
-    let requests = 0, promptTokens = 0, completionTokens = 0, costUsd = 0;
+    let requests = 0,
+      promptTokens = 0,
+      completionTokens = 0,
+      costUsd = 0;
     for (const e of this.perModel.values()) {
       requests += e.requests;
       promptTokens += e.promptTokens;
@@ -390,7 +393,7 @@ class RunStats {
 
   /**
    * Get elapsed time in milliseconds since run start.
-   * @returns {number}
+   * @returns {number} Elapsed milliseconds
    */
   elapsedMs() {
     return Date.now() - this.startTime;
@@ -449,7 +452,7 @@ class RunStats {
         byModel: perModelBreakdown,
       },
       pages: {
-        total: this.pageStats.total || (this.pageStats.success + this.pageStats.error + this.pageStats.cached),
+        total: this.pageStats.total || this.pageStats.success + this.pageStats.error + this.pageStats.cached,
         success: this.pageStats.success,
         error: this.pageStats.error,
         cached: this.pageStats.cached,
@@ -2786,11 +2789,12 @@ NGUYÊN TẮC BẮT BUỘC:
  * @param {number} pageNumber - Page number
  * @param {Array<{evidenceId: string, text: string, isAmbiguous: boolean}>} blocks - OCR blocks
  * @param {Array<object>} [tables] - Detected tables from img2table (defaults to empty array)
+ * @param {string|null} [sheetName] - Excel sheet name for entity context (defaults to null)
  * @returns {string} Prompt for Gemini API
  */
-const pageExtractionPrompt = (pageNumber, blocks, tables = []) => `
+const pageExtractionPrompt = (pageNumber, blocks, tables = [], sheetName = null) => `
 Phân tích nội dung OCR từ trang ${pageNumber} của tài liệu yêu cầu.
-
+${sheetName ? `\n## Sheet Context\nTrang này thuộc sheet Excel: **"${sheetName}"**. Sử dụng tên sheet để xác định entity/chức năng mà trang mô tả. Khi đặt tên bảng (table title), PHẢI bao gồm tên entity từ sheet (ví dụ: "TSVファイルの仕様 - ${sheetName}") để phân biệt với bảng cùng tên ở sheet khác.\n` : ''}
 ## OCR Blocks (Evidence Source)
 ${blocks.map((b) => `- [${b.evidenceId}] ${b.text}${b.isAmbiguous ? ' ⚠️ (confidence < 0.7)' : ''}`).join('\n')}
 ${
@@ -2864,6 +2868,11 @@ QUAN TRỌNG:
   Header và nội dung cell phải SONG NGỮ: giữ tiếng Nhật gốc + dịch tiếng Việt trong ngoặc.
   Ví dụ: "列名 (Tên cột)" | "そのまま出力 (Xuất nguyên trạng)"
   KHÔNG chuyển bảng thành text mô tả.
+- OCR CORRECTION: Các block được đánh dấu ⚠️ có confidence thấp, có thể chứa:
+  + Ký tự Kanji bị cắt/sai: "卜" thường là "ト", "一" có thể là "ー" (chōon), "工" có thể là "エ"
+  + Từ bị thiếu ký tự: "ユザー" → "ユーザー", "テナ卜" → "テナント", "エディ" → "エンティティ"
+  + Từ bị dính: "のまま" → "そのまま", "とする" → "...とする"
+  Hãy sửa/reconstruct từ tiếng Nhật dựa vào ngữ cảnh khi dịch sang tiếng Việt.
 `;
 
 /**
@@ -2997,6 +3006,7 @@ Tạo tài liệu Epic Requirement với các đặc điểm:
 - Câu cú rõ ràng, mạch lạc, dễ đọc
 - Ghép nối thông tin logic, không rời rạc
 - **GIỮ NGUYÊN các bảng dưới dạng markdown table** (không chuyển thành văn bản)
+- **PHÂN BIỆT bảng cùng tên**: Khi nhiều bảng có cùng tiêu đề (ví dụ: "TSVファイルの仕様"), PHẢI thêm tên entity/sheet vào title để phân biệt. Ví dụ: "TSVファイルの仕様 - User", "TSVファイルの仕様 - Hospital"
 
 ## Output Schema (JSON)
 {
@@ -3038,7 +3048,7 @@ Tạo tài liệu Epic Requirement với các đặc điểm:
   ],
   "tables": [
     {
-      "title": "Tên bảng (giữ nguyên tiếng Nhật nếu có)",
+      "title": "Tên bảng ĐÃ PHÂN BIỆT (bao gồm entity nếu có nhiều bảng cùng tên)",
       "markdownTable": "| Header1 | Header2 |\\n|---|---|\\n| data | data |",
       "notes": "Ghi chú về bảng"
     }
@@ -3060,6 +3070,10 @@ NGUYÊN TẮC VIẾT:
    dưới dạng markdown table trong field "tables". KHÔNG được chuyển bảng thành văn bản mô tả.
    Header và nội dung cell phải SONG NGỮ: giữ tiếng Nhật gốc + dịch tiếng Việt trong ngoặc.
    Ví dụ: "更新範囲 (Phạm vi cập nhật)" | "そのまま出力 (Xuất nguyên trạng)" | "エラーとする (Báo lỗi)"
+8. PHÂN BIỆT BẢNG TRÙNG TÊN: Nếu nhiều bảng có cùng tiêu đề gốc (ví dụ "TSVファイルの仕様"),
+   PHẢI thêm entity/context vào title. Sử dụng column prefix (ví dụ: 1user→User, 1Hospital→Hospital,
+   1Staff→Staff, 1role→Role, ActivityS→ActivitySequence, IncidentT→IncidentType, SystemC→SystemCode)
+   hoặc sheetName từ page summary để xác định entity. Kết quả: "TSVファイルの仕様 - User (Đặc tả file TSV - User)"
 `;
 
 /**
@@ -3221,7 +3235,12 @@ async function processPage(client, pageNumber, ocrData, renderPagesDir = null, v
     log('info', `📊 Page ${pageNumber}: ${tables.length} table(s) detected by img2table`);
   }
 
-  const prompt = pageExtractionPrompt(pageNumber, ocrData.blocks, tables);
+  const sheetName = ocrData.sheetName || null;
+  if (sheetName) {
+    log('debug', `📋 Page ${pageNumber}: sheet context = "${sheetName}"`);
+  }
+
+  const prompt = pageExtractionPrompt(pageNumber, ocrData.blocks, tables, sheetName);
 
   // Phase 3 Fix: Use generateWithFallback for per-page processing
   // This provides OpenRouter fallback when Gemini socket disconnects
@@ -4046,11 +4065,68 @@ function validateEvidence(synthesis, allPages = null) {
 }
 
 /**
+ * Build page-to-sheetName lookup from manifest's sheet-to-page mapping.
+ * Falls back to empty map if manifest has no sheet data.
+ * @param {string} ocrDir - Path to OCR directory (used to resolve manifest path)
+ * @returns {Map<number, string>} Map of pageNumber → sheetName
+ */
+function buildPageToSheetMap(ocrDir) {
+  const manifestPath = path.join(path.dirname(ocrDir), 'manifest.json');
+  /** @type {Map<number, string>} */
+  const pageToSheet = new Map();
+
+  if (!fs.existsSync(manifestPath)) return pageToSheet;
+
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+
+    // Method 1: Use sheets[] array with sourcePages (from render step with stitching)
+    if (Array.isArray(manifest.sheets) && manifest.sheets.length > 0) {
+      for (const sheet of manifest.sheets) {
+        if (sheet.sheetName && Array.isArray(sheet.sourcePages)) {
+          for (const pageNum of sheet.sourcePages) {
+            pageToSheet.set(pageNum, sheet.sheetName);
+          }
+        }
+      }
+      if (pageToSheet.size > 0) {
+        log('info', `📋 Loaded sheet context for ${pageToSheet.size} pages from manifest (sheets[])`);
+        return pageToSheet;
+      }
+    }
+
+    // Method 2: Use render.sheetNames + totalPages to infer mapping (fallback)
+    const sheetNames = manifest.render?.sheetNames || [];
+    const totalPages = manifest.render?.totalPages || manifest.pages?.length || 0;
+    if (sheetNames.length > 0 && totalPages > 0) {
+      const pagesPerSheet = Math.ceil(totalPages / sheetNames.length);
+      for (let i = 0; i < sheetNames.length; i++) {
+        const startPage = i * pagesPerSheet + 1;
+        const endPage = Math.min((i + 1) * pagesPerSheet, totalPages);
+        for (let p = startPage; p <= endPage; p++) {
+          pageToSheet.set(p, sheetNames[i]);
+        }
+      }
+      if (pageToSheet.size > 0) {
+        log('info', `📋 Inferred sheet context for ${pageToSheet.size} pages from manifest (avgPagesPerSheet)`);
+      }
+    }
+  } catch (err) {
+    log('warn', `⚠️ Failed to read manifest for sheet context: ${err.message}`);
+  }
+
+  return pageToSheet;
+}
+
+/**
  * Load all OCR files from directory
  * @param {string} ocrDir - Path to OCR directory
- * @returns {Array<{pageNumber: number, blocks: Array, ocrFile: string}>} Array of page data
+ * @returns {Array<{pageNumber: number, blocks: Array, ocrFile: string, sheetName: string|null}>} Array of page data
  */
 function loadOcrFiles(ocrDir) {
+  // Build page→sheet mapping from manifest for context injection
+  const pageToSheet = buildPageToSheetMap(ocrDir);
+
   // Prefer sheet-based OCR files over page-based
   let ocrFiles = fs
     .readdirSync(ocrDir)
@@ -4073,15 +4149,14 @@ function loadOcrFiles(ocrDir) {
 
   log('info', `Found ${ocrFiles.length} ${mode}s to synthesize`);
 
-    return ocrFiles.map((ocrFile) => {
+  return ocrFiles.map((ocrFile) => {
     const ocrPath = path.join(ocrDir, ocrFile);
     const ocrData = JSON.parse(fs.readFileSync(ocrPath, 'utf-8'));
 
     // Normalize blocks: ensure evidenceId exists (backward compat with older OCR)
     const blocks = (ocrData.blocks || []).map((b, idx) => {
-      const pagePrefix = mode === 'sheet'
-        ? `s${String(ocrData.page).padStart(2, '0')}`
-        : `p${String(ocrData.page).padStart(4, '0')}`;
+      const pagePrefix =
+        mode === 'sheet' ? `s${String(ocrData.page).padStart(2, '0')}` : `p${String(ocrData.page).padStart(4, '0')}`;
       const blockId = String(b.id || idx + 1).padStart(4, '0');
       const defaultEvidenceId = `EV-${pagePrefix}-b${blockId}`;
 
@@ -4091,9 +4166,12 @@ function loadOcrFiles(ocrDir) {
       };
     });
 
+    // Inject sheetName: prefer OCR-embedded value, fall back to manifest mapping
+    const sheetName = ocrData.sheetName || pageToSheet.get(ocrData.page) || null;
+
     return {
       pageNumber: ocrData.page,
-      sheetName: ocrData.sheetName || null,
+      sheetName,
       blocks,
       tables: ocrData.tables || [],
       ocrFile,
@@ -4204,6 +4282,11 @@ async function processIndividualPages(client, pagesToProcess, ocrDir, summariesD
       const ocrPath = path.join(ocrDir, page.ocrFile);
       const ocrData = JSON.parse(fs.readFileSync(ocrPath, 'utf-8'));
 
+      // Inject sheetName from loadOcrFiles() (includes manifest lookup) if not in OCR file
+      if (!ocrData.sheetName && page.sheetName) {
+        ocrData.sheetName = page.sheetName;
+      }
+
       try {
         const summary = await processPage(client, pageNumber, ocrData, renderPagesDir, visionClient);
         savePageCache(summariesDir, pageNumber, summary);
@@ -4255,6 +4338,7 @@ function collectTablesFromPageSummaries(pageSummaries) {
           title: t.title || `Table (page ${page.pageNumber})`,
           markdownTable: t.markdownTable || '',
           notes: t.notes || null,
+          pageNumber: page.pageNumber,
         });
       }
     }
@@ -4385,11 +4469,16 @@ async function retryEmptyPagesWithVision(pageSummaries, summariesDir, outputDir)
  * Ensure tables from page summaries are preserved in the merged synthesis.
  * The LLM merge step may drop or truncate tables due to output token limits,
  * so we inject/supplement them deterministically from the per-page summaries.
+ * Also performs:
+ * - Entity detection from column prefixes (e.g., "1user" → "User")
+ * - Title disambiguation for duplicate table names
+ * - Broken table flagging (< 3 data rows)
  * @param {object} synthesis - Merged synthesis result (mutated in place)
  * @param {Array<object>} pageSummaries - Per-page summaries
+ * @param {string|null} [ocrDir] - Path to OCR directory for sheet-name fallback
  * @returns {void}
  */
-function reconcileTables(synthesis, pageSummaries) {
+async function reconcileTables(synthesis, pageSummaries, ocrDir = null) {
   const mergedTables = synthesis.tables || [];
   const pageTables = collectTablesFromPageSummaries(pageSummaries);
 
@@ -4403,8 +4492,417 @@ function reconcileTables(synthesis, pageSummaries) {
     synthesis.tables = [...mergedTables, ...newTables];
   }
 
+  // Build page-to-sheet map for sheetName fallback on table titles
+  const pageToSheet = ocrDir ? buildPageToSheetMap(ocrDir) : new Map();
+
+  // Enrich table titles with entity context and flag broken tables
   if (synthesis.tables?.length > 0) {
+    enrichTableTitles(synthesis.tables, pageToSheet);
+    flagBrokenTables(synthesis.tables);
+
+    // Vision re-extraction for misaligned tables (#3)
+    if (ocrDir) {
+      const outputDir = path.dirname(ocrDir);
+      await reExtractMisalignedTables(synthesis.tables, outputDir);
+    }
+
+    // Apply OCR text correction dictionary to all table content
+    correctOcrTruncation(synthesis.tables);
     log('info', `📊 Final output: ${synthesis.tables.length} specification tables`);
+  }
+}
+
+/**
+ * Known entity prefixes found in TSV spec column names.
+ * Maps column prefix patterns → entity display name.
+ * @type {Array<{pattern: RegExp, entity: string}>}
+ */
+const ENTITY_PREFIX_PATTERNS = [
+  { pattern: /\buser\b/i, entity: 'User' },
+  { pattern: /\brole\b/i, entity: 'Role' },
+  { pattern: /\bhospital\b/i, entity: 'Hospital' },
+  { pattern: /\bstaff\b/i, entity: 'Staff' },
+  { pattern: /\bbrigade\b/i, entity: 'Brigade' },
+  { pattern: /\bvehicle\b/i, entity: 'Vehicle' },
+  { pattern: /\bActivityS/i, entity: 'ActivitySequence' },
+  { pattern: /\bIncidentT/i, entity: 'IncidentType' },
+  { pattern: /\bSystemC/i, entity: 'SystemCode' },
+  { pattern: /\bDepartment\b/i, entity: 'Department' },
+];
+
+/**
+ * Detect entity name from a markdown table's content by analyzing column prefixes.
+ * Looks at the first column of data rows for patterns like "1user", "2Hospital", "ActivityS".
+ * @param {string} markdownTable - Markdown table string
+ * @returns {string|null} Detected entity name or null
+ */
+function detectEntityFromTable(markdownTable) {
+  if (!markdownTable) return null;
+
+  // Extract first column values from data rows (skip header + separator)
+  const lines = markdownTable.split('\n').filter((l) => l.trim().startsWith('|'));
+  const dataRows = lines.slice(2); // skip header + separator
+
+  for (const row of dataRows) {
+    const cells = row
+      .split('|')
+      .map((c) => c.trim())
+      .filter(Boolean);
+    if (cells.length === 0) continue;
+
+    const firstCell = cells[0];
+    for (const { pattern, entity } of ENTITY_PREFIX_PATTERNS) {
+      if (pattern.test(firstCell)) {
+        return entity;
+      }
+    }
+  }
+
+  return null;
+}
+
+/** Generic table name patterns that need entity disambiguation */
+const GENERIC_TABLE_PATTERNS = [
+  /TSVファイルの仕様/,
+  /インポートTSVファイルの仕様/,
+  /TSVのインポート仕様/,
+  /TSVインポート仕様/,
+  /TSVの仕様/,
+  /インポート処理/,
+  /ファイルの仕様/,
+  /^Danh sách/,
+  /^Specification Table$/,
+  /^Thông tin/,
+  /^Quy định/,
+];
+
+/**
+ * Check whether a table title is generic/vague and needs entity enrichment.
+ * @param {string} title - Table title
+ * @returns {boolean} True if the title is generic
+ */
+function isGenericTableTitle(title) {
+  return GENERIC_TABLE_PATTERNS.some((p) => p.test(title)) || title === 'N/A' || title.length < 3;
+}
+
+/**
+ * Check whether a title already contains a known entity name.
+ * @param {string} title - Table title
+ * @returns {boolean} True if entity is already present
+ */
+function titleHasEntity(title) {
+  const lower = title.toLowerCase();
+  return ENTITY_PREFIX_PATTERNS.some(({ entity }) => lower.includes(entity.toLowerCase()));
+}
+
+/**
+ * Resolve entity name from manifest's page-to-sheet mapping.
+ * Extracts page number from EV-pNNNN in the title and looks up sheet name.
+ * @param {string} title - Table title
+ * @param {number|undefined} pageNumber - Optional page number from table
+ * @param {Map<number, string>} pageToSheet - Page-to-sheet name map
+ * @returns {string|null} Resolved entity or null
+ */
+function resolveEntityFromSheet(title, pageNumber, pageToSheet) {
+  const evMatch = title.match(/EV-p(\d+)/);
+  const pageNum = evMatch ? parseInt(evMatch[1], 10) : pageNumber;
+  if (!pageNum) return null;
+
+  const sheetName = pageToSheet.get(pageNum);
+  if (!sheetName) return null;
+
+  // Extract entity hint from sheetName like "項目-User" → "User"
+  const sheetEntity = sheetName.replace(/^項目-/, '').replace(/^参考-/, '');
+  return sheetEntity !== sheetName.replace(/^[^-]+-/, '') ? sheetEntity : sheetName;
+}
+
+/**
+ * Enrich table titles by adding entity context when titles are duplicated.
+ * Also adds entity context from detectEntityFromTable for any table whose title
+ * suggests it's a generic spec table.
+ * @param {Array<{title: string, markdownTable: string, notes?: string, pageNumber?: number}>} tables - Tables to enrich (mutated)
+ * @param {Map<number, string>} pageToSheet - Page-to-sheet name map from manifest
+ */
+function enrichTableTitles(tables, pageToSheet = new Map()) {
+  let enriched = 0;
+  for (const table of tables) {
+    const title = table.title || '';
+
+    if (!isGenericTableTitle(title) || titleHasEntity(title)) continue;
+
+    // Strategy 1: detect entity from table content (column prefixes)
+    // Strategy 2: fallback to sheetName from manifest page mapping
+    const entity =
+      detectEntityFromTable(table.markdownTable) ||
+      (pageToSheet.size > 0 ? resolveEntityFromSheet(title, table.pageNumber, pageToSheet) : null);
+
+    if (entity) {
+      const oldTitle = table.title;
+      table.title = title === 'N/A' || title.length < 3 ? `Specification Table - ${entity}` : `${title} - ${entity}`;
+      log('info', `  📋 Enriched table title: "${oldTitle}" → "${table.title}"`);
+      enriched++;
+    }
+  }
+
+  if (enriched > 0) {
+    log('info', `📋 Enriched ${enriched} table title(s) with entity context`);
+  }
+}
+
+/**
+ * Flag tables with very few data rows as potentially broken/incomplete.
+ * Adds a warning note to tables with < 3 data rows.
+ * @param {Array<{title: string, markdownTable: string, notes?: string}>} tables - Tables to check (mutated)
+ */
+function flagBrokenTables(tables) {
+  const MIN_DATA_ROWS = 3;
+  let flagged = 0;
+
+  for (const table of tables) {
+    if (!table.markdownTable) continue;
+
+    const lines = table.markdownTable.split('\n').filter((l) => l.trim().startsWith('|'));
+    const dataRowCount = Math.max(0, lines.length - 2); // subtract header + separator
+
+    if (dataRowCount < MIN_DATA_ROWS && dataRowCount > 0) {
+      const warning = `⚠️ Bảng có thể không đầy đủ (chỉ ${dataRowCount} dòng dữ liệu). Kiểm tra lại nguồn gốc.`;
+      table.notes = table.notes ? `${table.notes}\n${warning}` : warning;
+      log('warn', `  ⚠️ Broken table detected: "${table.title}" (${dataRowCount} data rows)`);
+      flagged++;
+    }
+
+    // Detect column misalignment (different pipe counts across rows)
+    const pipeCounts = lines.map((l) => l.split('|').length);
+    const uniquePipes = new Set(pipeCounts);
+    if (uniquePipes.size > 1 && dataRowCount > 2) {
+      const warning = `⚠️ MISALIGNED: Bảng có ${uniquePipes.size} cấu trúc cột khác nhau (${[...uniquePipes].join(',')} pipes). OCR có thể đã parse sai cấu trúc bảng phức tạp.`;
+      table.notes = table.notes ? `${table.notes}\n${warning}` : warning;
+      table._misaligned = true;
+      log('warn', `  ⚠️ Misaligned table: "${table.title}" (${uniquePipes.size} pipe variations: ${[...uniquePipes].join(',')})`);
+      flagged++;
+    }
+  }
+
+  if (flagged > 0) {
+    log('warn', `⚠️ ${flagged} potentially broken table(s) flagged`);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// #1: OCR Text Correction Dictionary
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Common OCR truncation/misread patterns in Japanese text.
+ * PaddleOCR frequently truncates long-vowel marks (ー) and confuses
+ * similar characters (卜/ト, ン/ソ). These are deterministic corrections
+ * applied AFTER LLM synthesis to avoid relying on LLM to fix OCR artifacts.
+ * @type {Array<{pattern: RegExp, replacement: string, description: string}>}
+ */
+const OCR_CORRECTION_DICTIONARY = [
+  // Long-vowel truncation (most common)
+  { pattern: /エクス一卜/g, replacement: 'エクスポート', description: 'export' },
+  { pattern: /エクスポ一卜/g, replacement: 'エクスポート', description: 'export' },
+  { pattern: /エクス一ト/g, replacement: 'エクスポート', description: 'export' },
+  { pattern: /イン一卜/g, replacement: 'インポート', description: 'import' },
+  { pattern: /インポ一卜/g, replacement: 'インポート', description: 'import' },
+  { pattern: /イン一ト/g, replacement: 'インポート', description: 'import' },
+  { pattern: /テナ卜/g, replacement: 'テナント', description: 'tenant' },
+  { pattern: /テナン卜/g, replacement: 'テナント', description: 'tenant' },
+  { pattern: /ユザー/g, replacement: 'ユーザー', description: 'user' },
+  { pattern: /セグメン卜/g, replacement: 'セグメント', description: 'segment' },
+  { pattern: /セグメソト/g, replacement: 'セグメント', description: 'segment' },
+  { pattern: /アカウン卜/g, replacement: 'アカウント', description: 'account' },
+  { pattern: /デフォル卜/g, replacement: 'デフォルト', description: 'default' },
+  { pattern: /チェッ夕/g, replacement: 'チェック', description: 'check (data)' },
+  // ト vs 卜 confusion (katakana vs radical)
+  { pattern: /リクエス卜/g, replacement: 'リクエスト', description: 'request' },
+  { pattern: /コメン卜/g, replacement: 'コメント', description: 'comment' },
+  { pattern: /マスタ一/g, replacement: 'マスター', description: 'master' },
+  { pattern: /デー夕/g, replacement: 'データ', description: 'data' },
+  { pattern: /ソー卜/g, replacement: 'ソート', description: 'sort' },
+  { pattern: /ポイン卜/g, replacement: 'ポイント', description: 'point' },
+  // segmentId / tenantId common OCR errors
+  { pattern: /segmentld/g, replacement: 'segmentId', description: 'segmentId (l→I)' },
+  { pattern: /tenantld/g, replacement: 'tenantId', description: 'tenantId (l→I)' },
+  { pattern: /brigadeld/g, replacement: 'brigadeId', description: 'brigadeId (l→I)' },
+  { pattern: /hospitalld/g, replacement: 'hospitalId', description: 'hospitalId (l→I)' },
+  { pattern: /staffld/g, replacement: 'staffId', description: 'staffId (l→I)' },
+  // Other common OCR misreads
+  { pattern: /ログイ一ザ/g, replacement: 'ログインユーザ', description: 'login user' },
+  { pattern: /ログイ-ザ/g, replacement: 'ログインユーザ', description: 'login user' },
+  { pattern: /ログインーザー/g, replacement: 'ログインユーザー', description: 'login user' },
+];
+
+/**
+ * Apply deterministic OCR text corrections to all table content.
+ * Corrects common PaddleOCR truncation/misread patterns in Japanese text.
+ * Mutates tables in place.
+ * @param {Array<{title: string, markdownTable: string, notes?: string}>} tables - Tables to correct
+ * @returns {void}
+ */
+function correctOcrTruncation(tables) {
+  let totalCorrections = 0;
+  const correctionCounts = new Map();
+
+  for (const table of tables) {
+    for (const field of ['title', 'markdownTable', 'notes']) {
+      if (!table[field]) continue;
+      let text = table[field];
+      for (const { pattern, replacement, description } of OCR_CORRECTION_DICTIONARY) {
+        const matches = text.match(pattern);
+        if (matches) {
+          text = text.replace(pattern, replacement);
+          const count = matches.length;
+          totalCorrections += count;
+          correctionCounts.set(description, (correctionCounts.get(description) || 0) + count);
+        }
+      }
+      table[field] = text;
+    }
+  }
+
+  if (totalCorrections > 0) {
+    const details = [...correctionCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([desc, count]) => `${desc}(${count})`)
+      .join(', ');
+    log('info', `🔤 OCR corrections: ${totalCorrections} fixes applied [${details}]`);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// #3: Vision Re-extraction for Misaligned Tables
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Prompt for vision-based table re-extraction.
+ * Sends the page image to Gemini Vision to get a clean markdown table.
+ * @param {string} tableTitle - Current table title for context
+ * @param {string} brokenTable - The misaligned markdown table for reference
+ * @returns {string} Prompt for vision model
+ */
+const visionTablePrompt = (tableTitle, brokenTable) => `
+This page image contains a specification table. The OCR-extracted table below has MISALIGNED columns
+(different rows have different numbers of columns). Please re-extract the table from the image
+with correct column alignment.
+
+## Current (broken) table title: "${tableTitle}"
+
+## Current (broken) table for reference:
+${brokenTable.substring(0, 2000)}
+
+## Instructions:
+1. Look at the image and identify the table structure (headers, columns, rows)
+2. Re-create the table in clean Markdown format with consistent columns
+3. Preserve the original Japanese text and bilingual annotations
+4. Ensure every row has the same number of | separators
+5. Keep Evidence IDs if visible
+
+## Output format (JSON):
+{
+  "markdownTable": "| col1 | col2 | ... |\\n|---|---|---|\\n| data | data | ... |",
+  "columnCount": 8,
+  "rowCount": 15,
+  "notes": "Brief note about what was fixed"
+}
+`;
+
+/**
+ * Resolve the page image path for a table by extracting page number from
+ * evidence ID in title or the pageNumber field.
+ * @param {{ title?: string, pageNumber?: number }} table - Table with title/pageNumber
+ * @param {string} renderPagesDir - Directory containing rendered page PNGs
+ * @returns {{ pageNum: number, imagePath: string } | null} Resolved path or null
+ */
+function resolveTablePageImage(table, renderPagesDir) {
+  const evMatch = (table.title || '').match(/EV-p(\d+)/);
+  const pageNum = evMatch ? parseInt(evMatch[1], 10) : table.pageNumber;
+  if (!pageNum) {
+    log('warn', `  ⚠️ Cannot determine page for "${table.title}" — skipping vision`);
+    return null;
+  }
+
+  const imagePath = path.join(renderPagesDir, `page-${String(pageNum).padStart(4, '0')}.png`);
+  if (!fs.existsSync(imagePath)) {
+    log('warn', `  ⚠️ Image not found: ${imagePath} — skipping vision`);
+    return null;
+  }
+  return { pageNum, imagePath };
+}
+
+/**
+ * Apply a vision re-extraction result to a misaligned table.
+ * Validates column consistency before accepting the replacement.
+ * @param {{ title: string, markdownTable: string, notes?: string, _misaligned?: boolean }} table - Table to update (mutated)
+ * @param {{ markdownTable: string, columnCount?: number, notes?: string }} result - Vision result
+ * @param {number} pageNum - Page number for logging
+ * @returns {boolean} Whether the vision result was accepted
+ */
+function applyVisionResult(table, result, pageNum) {
+  const newLines = result.markdownTable.split('\\n').filter((l) => l.trim().startsWith('|'));
+  const newPipes = new Set(newLines.map((l) => l.split('|').length));
+
+  if (newPipes.size > 1 && newLines.length <= 3) {
+    log('warn', `  ⚠️ Vision result still misaligned for "${table.title}" — keeping original`);
+    return false;
+  }
+
+  const oldRowCount = table.markdownTable.split('\\n').filter((l) => l.trim().startsWith('|')).length;
+  table.markdownTable = result.markdownTable;
+  table.notes = (table.notes || '').replace(/⚠️ MISALIGNED:.*$/, '').trim();
+  if (result.notes) {
+    table.notes = table.notes ? `${table.notes}\\n${result.notes}` : result.notes;
+  }
+  delete table._misaligned;
+  log('info', `  ✅ Vision fixed "${table.title}" (p${pageNum}): ${oldRowCount} → ${newLines.length} rows, ${result.columnCount || '?'} cols`);
+  return true;
+}
+
+/**
+ * Re-extract misaligned tables using Gemini Vision.
+ * For tables flagged with _misaligned=true, sends the page image to Vision
+ * to get a correctly structured markdown table.
+ * @param {Array<{title: string, markdownTable: string, _misaligned?: boolean, pageNumber?: number}>} tables - Tables to process
+ * @param {string} outputDir - Root output directory
+ * @returns {Promise<void>}
+ */
+async function reExtractMisalignedTables(tables, outputDir) {
+  const geminiKey = process.env.GEMINI_API_KEY;
+  if (!geminiKey) return;
+
+  const misaligned = tables.filter((t) => t._misaligned);
+  if (misaligned.length === 0) return;
+
+  const renderPagesDir = path.join(outputDir, 'render', 'pages');
+  if (!fs.existsSync(renderPagesDir)) {
+    log('warn', '⚠️ No render pages directory — skipping vision re-extraction');
+    return;
+  }
+
+  const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  const visionClient = new GeminiClient(geminiKey, geminiModel);
+  log('info', `🖼️  Vision table re-extraction: ${misaligned.length} misaligned table(s)`);
+
+  let fixed = 0;
+  for (const table of misaligned) {
+    const resolved = resolveTablePageImage(table, renderPagesDir);
+    if (!resolved) continue;
+
+    try {
+      const prompt = visionTablePrompt(table.title, table.markdownTable);
+      const result = await visionClient.generateVision(resolved.imagePath, prompt, SYSTEM_INSTRUCTION);
+
+      if (result?.markdownTable && applyVisionResult(table, result, resolved.pageNum)) {
+        fixed++;
+      }
+    } catch (err) {
+      log('warn', `  ⚠️ Vision re-extraction failed for "${table.title}": ${err.message.slice(0, 100)}`);
+    }
+  }
+
+  if (fixed > 0) {
+    log('info', `🖼️  Vision fixed ${fixed}/${misaligned.length} misaligned table(s)`);
   }
 }
 
@@ -4507,7 +5005,7 @@ async function main() {
 
     // Ensure tables from page summaries are preserved in final synthesis
     // LLM merge may drop/truncate tables due to output token limits.
-    reconcileTables(synthesis, pageSummaries);
+    await reconcileTables(synthesis, pageSummaries, ocrDir);
 
     saveSynthesisResults(
       synthesis,

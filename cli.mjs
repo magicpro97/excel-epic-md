@@ -250,18 +250,34 @@ async function main() {
   // Create output directory
   fs.mkdirSync(outputDir, { recursive: true });
 
-  // Initialize manifest
-  const manifest = {
-    docId: path.basename(inputPath, path.extname(inputPath)),
-    sourceName: path.basename(inputPath),
-    sourcePath: inputPath,
-    createdAt: new Date().toISOString(),
-    outputDir,
-    steps: {},
-    pages: [],
-  };
-
+  // Initialize or load existing manifest (preserve render data from prior runs)
   const manifestPath = path.join(outputDir, 'manifest.json');
+  let manifest;
+  if (fs.existsSync(manifestPath)) {
+    try {
+      manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      // Update metadata but preserve pages, sheets, render sections
+      manifest.sourceName = path.basename(inputPath);
+      manifest.sourcePath = inputPath;
+      manifest.steps = manifest.steps || {};
+      console.log('  ℹ️ Loaded existing manifest (preserving render data)');
+    } catch {
+      manifest = null;
+    }
+  }
+
+  if (!manifest) {
+    manifest = {
+      docId: path.basename(inputPath, path.extname(inputPath)),
+      sourceName: path.basename(inputPath),
+      sourcePath: inputPath,
+      createdAt: new Date().toISOString(),
+      outputDir,
+      steps: {},
+      pages: [],
+    };
+  }
+
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 
   // Run pipeline
@@ -270,9 +286,23 @@ async function main() {
   for (const step of steps) {
     try {
       await runStep(step, inputPath, outputDir);
+      // Re-read manifest from disk after each step (step may have updated it)
+      if (fs.existsSync(manifestPath)) {
+        try {
+          manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+        } catch { /* keep in-memory version */ }
+      }
+      manifest.steps = manifest.steps || {};
       manifest.steps[step] = { status: 'success', completedAt: new Date().toISOString() };
       fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
     } catch (err) {
+      // Re-read manifest from disk on error too
+      if (fs.existsSync(manifestPath)) {
+        try {
+          manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+        } catch { /* keep in-memory version */ }
+      }
+      manifest.steps = manifest.steps || {};
       manifest.steps[step] = { status: 'failed', error: err.message };
       fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
       console.error(`\n❌ Pipeline failed at step: ${step}`);

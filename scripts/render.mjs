@@ -788,6 +788,66 @@ async function main() {
   if (existingPages.length > 0 && (!CONFIG.stitchSheets || existingSheets.length > 0)) {
     const sheetsInfo = existingSheets.length > 0 ? `, ${existingSheets.length} sheets` : '';
     console.log(`  ⏭️ Skipping render: ${existingPages.length} pages${sheetsInfo} already exist`);
+
+    // Rebuild manifest if sheet mapping is missing (handles prior runs that lost it)
+    const manifestPath = path.join(outputDir, 'manifest.json');
+    let needsManifestRebuild = false;
+    if (fs.existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+        needsManifestRebuild =
+          !manifest.sheets || manifest.sheets.length === 0 || !manifest.pages || manifest.pages.length === 0;
+      } catch {
+        needsManifestRebuild = true;
+      }
+    } else {
+      needsManifestRebuild = true;
+    }
+
+    if (needsManifestRebuild) {
+      console.log('  🔄 Rebuilding manifest with sheet mapping...');
+      try {
+        // Read sheet names from Excel
+        const ExcelJS = (await import('exceljs')).default;
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.readFile(inputPath);
+        const sheetNames = [];
+        workbook.eachSheet((ws) => sheetNames.push(ws.name));
+
+        const sortedPages = existingPages.sort();
+        const sheetInfo = { sheetCount: sheetNames.length, sheetNames };
+
+        if (existingSheets.length > 0) {
+          // Build sheet results from existing sheet PNGs
+          const sortedSheets = existingSheets.sort();
+          const sheetResults = sortedSheets.map((filename, idx) => ({
+            sheetIndex: idx + 1,
+            sheetName: sheetNames[idx] || `Sheet${idx + 1}`,
+            filename,
+            sourcePages: [],
+            width: 0,
+            height: 0,
+          }));
+
+          // Distribute pages evenly across sheets
+          const pagesPerSheet = Math.ceil(sortedPages.length / sortedSheets.length);
+          for (let p = 0; p < sortedPages.length; p++) {
+            const sheetIdx = Math.min(Math.floor(p / pagesPerSheet), sheetResults.length - 1);
+            sheetResults[sheetIdx].sourcePages.push(p + 1);
+          }
+
+          updateManifestWithSheets(outputDir, sheetResults, sortedPages, sheetInfo);
+          console.log(`  ✅ Manifest rebuilt: ${sheetResults.length} sheets, ${sortedPages.length} pages`);
+        } else {
+          // No sheet PNGs - just update manifest with pages + render info (enables Method 2 in synthesize)
+          updateManifest(outputDir, sortedPages, sheetInfo);
+          console.log(`  ✅ Manifest rebuilt (pages-only): ${sheetNames.length} sheets, ${sortedPages.length} pages`);
+        }
+      } catch (err) {
+        console.warn(`  ⚠️ Could not rebuild manifest: ${err.message}`);
+      }
+    }
+
     return;
   }
 

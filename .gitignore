@@ -26,3 +26,6 @@ __pycache__/
 # Test output
 test-output/
 Sprint*
+
+# Generated pricing cache
+scripts/model-pricing.json
