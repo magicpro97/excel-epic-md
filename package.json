@@ -9,7 +9,9 @@
     "render": "bun scripts/render.mjs",
     "ocr": "python3 scripts/ocr.py",
     "synthesize": "bun scripts/synthesize.mjs",
-    "assemble": "bun scripts/assemble.mjs"
+    "assemble": "bun scripts/assemble.mjs",
+    "update-pricing": "bun scripts/update-pricing.mjs",
+    "pricing-stats": "bun scripts/update-pricing.mjs --stats"
   },
   "dependencies": {
     "bottleneck": "^2.19.5",

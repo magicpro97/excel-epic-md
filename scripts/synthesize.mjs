@@ -17,6 +17,7 @@ import { jsonrepair } from 'jsonrepair';
 import path from 'path';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
+import { fetchAndSavePricing } from './update-pricing.mjs';
 
 // ============================================================================
 // CONFIGURATION
@@ -153,6 +154,391 @@ const GEMINI_QUOTA = {
   // Available models for rotation
   DEFAULT_MODELS: ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.5-pro'],
 };
+
+// ============================================================================
+// MODEL PRICING TABLE (dynamic from model-pricing.json + hardcoded fallback)
+// ============================================================================
+
+/**
+ * Hardcoded fallback pricing — used when model-pricing.json is missing or stale.
+ * Run `bun scripts/update-pricing.mjs` to fetch latest from LiteLLM.
+ * @constant {Array<{pattern: RegExp, provider: string, inputPer1M: number, outputPer1M: number}>}
+ */
+const FALLBACK_PRICING = [
+  // Gemini models
+  { pattern: /gemini-2\.5-pro/i,      provider: 'gemini', inputPer1M: 1.25,  outputPer1M: 5.00 },
+  { pattern: /gemini-2\.5-flash/i,    provider: 'gemini', inputPer1M: 0.15,  outputPer1M: 0.60 },
+  { pattern: /gemini-2\.0-flash/i,    provider: 'gemini', inputPer1M: 0.075, outputPer1M: 0.30 },
+  { pattern: /gemini-1\.5-pro/i,      provider: 'gemini', inputPer1M: 1.25,  outputPer1M: 5.00 },
+  { pattern: /gemini-1\.5-flash/i,    provider: 'gemini', inputPer1M: 0.075, outputPer1M: 0.30 },
+  // OpenAI direct
+  { pattern: /^gpt-4\.1-mini/i,      provider: 'openai', inputPer1M: 0.40,  outputPer1M: 1.60 },
+  { pattern: /^gpt-4\.1-nano/i,      provider: 'openai', inputPer1M: 0.10,  outputPer1M: 0.40 },
+  { pattern: /^gpt-4\.1/i,           provider: 'openai', inputPer1M: 2.00,  outputPer1M: 8.00 },
+  { pattern: /^gpt-4o-mini/i,        provider: 'openai', inputPer1M: 0.15,  outputPer1M: 0.60 },
+  { pattern: /^gpt-4o/i,             provider: 'openai', inputPer1M: 2.50,  outputPer1M: 10.00 },
+  { pattern: /^gpt-4-turbo/i,        provider: 'openai', inputPer1M: 10.00, outputPer1M: 30.00 },
+  { pattern: /^o3-mini/i,            provider: 'openai', inputPer1M: 1.10,  outputPer1M: 4.40 },
+  { pattern: /^o3/i,                 provider: 'openai', inputPer1M: 2.00,  outputPer1M: 8.00 },
+  { pattern: /^o4-mini/i,            provider: 'openai', inputPer1M: 1.10,  outputPer1M: 4.40 },
+  // Anthropic Claude
+  { pattern: /claude-3-5-sonnet/i,   provider: 'anthropic', inputPer1M: 3.00,  outputPer1M: 15.00 },
+  { pattern: /claude-3-5-haiku/i,    provider: 'anthropic', inputPer1M: 0.80,  outputPer1M: 4.00 },
+  { pattern: /claude-3-opus/i,       provider: 'anthropic', inputPer1M: 15.00, outputPer1M: 75.00 },
+  { pattern: /claude-3-haiku/i,      provider: 'anthropic', inputPer1M: 0.25,  outputPer1M: 1.25 },
+];
+
+/**
+ * Dynamic pricing lookup table loaded from model-pricing.json.
+ * Keyed by model name (lowercase) → { provider, inputPer1M, outputPer1M }.
+ * Populated by loadDynamicPricing() at startup.
+ * @type {Map<string, {provider: string, inputPer1M: number, outputPer1M: number}>}
+ */
+const DYNAMIC_PRICING = new Map();
+
+/** @type {string|null} Timestamp when pricing was last fetched */
+let PRICING_UPDATED_AT = null;
+
+/**
+ * Load pricing from model-pricing.json into DYNAMIC_PRICING map.
+ * @param {string} pricingPath - Path to model-pricing.json
+ * @returns {number} Number of models loaded
+ */
+function loadPricingFromFile(pricingPath) {
+  try {
+    if (!fs.existsSync(pricingPath)) return 0;
+
+    const data = JSON.parse(fs.readFileSync(pricingPath, 'utf-8'));
+    if (!data.models || typeof data.models !== 'object') return 0;
+
+    PRICING_UPDATED_AT = data._meta?.updatedAt || null;
+    DYNAMIC_PRICING.clear();
+
+    let count = 0;
+    for (const [modelName, info] of Object.entries(data.models)) {
+      if (info.inputPer1M != null || info.outputPer1M != null) {
+        DYNAMIC_PRICING.set(modelName.toLowerCase(), {
+          provider: info.provider || 'unknown',
+          inputPer1M: info.inputPer1M || 0,
+          outputPer1M: info.outputPer1M || 0,
+        });
+        count++;
+      }
+    }
+    return count;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Fetch latest pricing from LiteLLM, save to file, and load into memory.
+ * Always attempts a fresh fetch. Falls back to existing file if fetch fails.
+ * Called once at pipeline startup — the fetch takes ~1-2s and ensures accurate cost tracking.
+ * @returns {Promise<void>}
+ */
+async function refreshPricing() {
+  const pricingPath = path.join(path.dirname(new URL(import.meta.url).pathname), 'model-pricing.json');
+
+  // Always try to fetch fresh pricing
+  const result = await fetchAndSavePricing({ quiet: true });
+
+  if (result) {
+    // Fetch succeeded → file was saved, load it
+    const count = loadPricingFromFile(pricingPath);
+    console.log(`💰 Fetched & loaded ${count} model prices (fresh from LiteLLM)`);
+    return;
+  }
+
+  // Fetch failed → try loading existing cached file
+  const count = loadPricingFromFile(pricingPath);
+  if (count > 0) {
+    const staleNote = PRICING_UPDATED_AT ? ` (cached: ${PRICING_UPDATED_AT.slice(0, 10)})` : '';
+    console.log(`💰 Loaded ${count} model prices from cache${staleNote}`);
+  } else {
+    console.log('💰 Using hardcoded fallback pricing (no cache available)');
+  }
+}
+
+/**
+ * Estimate cost in USD from model name and token counts.
+ * Strategy: dynamic lookup (exact → prefix) → fallback regex table → $0.
+ * @param {string} providerHint - Provider key (e.g. 'gemini', 'github-models', 'openai')
+ * @param {string} model - Model name string
+ * @param {number} inputTokens - Prompt token count
+ * @param {number} outputTokens - Completion token count
+ * @returns {number} Estimated cost in USD
+ */
+function estimateCost(providerHint, model, inputTokens, outputTokens) {
+  // Free providers — always $0
+  if (providerHint === 'github-models' || providerHint === 'ollama') return 0;
+
+  const modelLower = model.toLowerCase();
+
+  // 1. Dynamic pricing: exact match
+  if (DYNAMIC_PRICING.size > 0) {
+    const exact = DYNAMIC_PRICING.get(modelLower);
+    if (exact) {
+      return (inputTokens / 1_000_000) * exact.inputPer1M + (outputTokens / 1_000_000) * exact.outputPer1M;
+    }
+
+    // 2. Dynamic pricing: prefix match (e.g., "gpt-4o-2024-08-06" → "gpt-4o")
+    for (const [key, val] of DYNAMIC_PRICING) {
+      if (modelLower.startsWith(key) || key.startsWith(modelLower)) {
+        return (inputTokens / 1_000_000) * val.inputPer1M + (outputTokens / 1_000_000) * val.outputPer1M;
+      }
+    }
+  }
+
+  // 3. Hardcoded fallback (regex patterns)
+  const entry = FALLBACK_PRICING.find((e) => e.pattern.test(model));
+  if (entry) {
+    return (inputTokens / 1_000_000) * entry.inputPer1M + (outputTokens / 1_000_000) * entry.outputPer1M;
+  }
+
+  return 0;
+}
+
+// ============================================================================
+// RUN STATS TRACKER
+// ============================================================================
+
+/**
+ * Global run statistics collector.
+ * Tracks LLM requests, token usage, page processing outcomes, and timing.
+ * Provides quality scoring and cost estimation for run reports.
+ */
+class RunStats {
+  constructor() {
+    /** @type {number} Unix timestamp (ms) when the run started */
+    this.startTime = Date.now();
+
+    /**
+     * Per-provider stats keyed by `${provider}::${model}`.
+     * @type {Map<string, {provider: string, model: string, requests: number, promptTokens: number, completionTokens: number, costUsd: number}>}
+     */
+    this.perModel = new Map();
+
+    /** @type {{ total: number, success: number, error: number, cached: number, empty: number, visionRetried: number, byType: Object<string,number> }} */
+    this.pageStats = {
+      total: 0,
+      success: 0,
+      error: 0,
+      cached: 0,
+      empty: 0,
+      visionRetried: 0,
+      byType: {},
+    };
+  }
+
+  /**
+   * Record one LLM API call with its token usage.
+   * @param {string} provider - Provider name (e.g. 'gemini', 'github-models')
+   * @param {string} model - Model identifier string
+   * @param {number} [promptTokens=0] - Input token count
+   * @param {number} [completionTokens=0] - Output token count
+   */
+  trackRequest(provider, model, promptTokens = 0, completionTokens = 0) {
+    const key = `${provider}::${model}`;
+    const existing = this.perModel.get(key) || {
+      provider,
+      model,
+      requests: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      costUsd: 0,
+    };
+    existing.requests += 1;
+    existing.promptTokens += promptTokens;
+    existing.completionTokens += completionTokens;
+    existing.costUsd += estimateCost(provider, model, promptTokens, completionTokens);
+    this.perModel.set(key, existing);
+  }
+
+  /**
+   * Record a processed page outcome.
+   * @param {string} pageType - pageType field from page summary (e.g. 'requirement', 'error', 'empty')
+   * @param {'success'|'error'|'cached'} outcome - Processing outcome category
+   */
+  trackPage(pageType, outcome) {
+    if (outcome === 'cached') {
+      this.pageStats.cached++;
+    } else if (outcome === 'error') {
+      this.pageStats.error++;
+    } else {
+      this.pageStats.success++;
+    }
+    if (pageType && pageType !== 'error') {
+      this.pageStats.byType[pageType] = (this.pageStats.byType[pageType] || 0) + 1;
+    }
+  }
+
+  /**
+   * Get aggregated totals across all providers.
+   * @returns {{ requests: number, promptTokens: number, completionTokens: number, totalTokens: number, costUsd: number }}
+   */
+  getTotals() {
+    let requests = 0, promptTokens = 0, completionTokens = 0, costUsd = 0;
+    for (const e of this.perModel.values()) {
+      requests += e.requests;
+      promptTokens += e.promptTokens;
+      completionTokens += e.completionTokens;
+      costUsd += e.costUsd;
+    }
+    return { requests, promptTokens, completionTokens, totalTokens: promptTokens + completionTokens, costUsd };
+  }
+
+  /**
+   * Get elapsed time in milliseconds since run start.
+   * @returns {number}
+   */
+  elapsedMs() {
+    return Date.now() - this.startTime;
+  }
+
+  /**
+   * Generate a structured run report object with all collected stats.
+   * @returns {object} Run report with timing, tokens, cost, pages, and per-model breakdown
+   */
+  generateReport() {
+    const totals = this.getTotals();
+    const elapsed = this.elapsedMs();
+    const elapsedSec = (elapsed / 1000).toFixed(1);
+    const elapsedMin = (elapsed / 60000).toFixed(1);
+
+    // Per-model breakdown sorted by requests descending
+    const perModelBreakdown = [...this.perModel.values()]
+      .sort((a, b) => b.requests - a.requests)
+      .map((m) => ({
+        provider: m.provider,
+        model: m.model,
+        requests: m.requests,
+        promptTokens: m.promptTokens,
+        completionTokens: m.completionTokens,
+        totalTokens: m.promptTokens + m.completionTokens,
+        costUsd: parseFloat(m.costUsd.toFixed(4)),
+      }));
+
+    // Tokens per second (throughput)
+    const tokensPerSecond = elapsed > 0 ? Math.round(totals.totalTokens / (elapsed / 1000)) : 0;
+
+    // Average tokens per request
+    const avgTokensPerRequest = totals.requests > 0 ? Math.round(totals.totalTokens / totals.requests) : 0;
+
+    return {
+      timing: {
+        startedAt: new Date(this.startTime).toISOString(),
+        completedAt: new Date().toISOString(),
+        elapsedMs: elapsed,
+        elapsedSeconds: parseFloat(elapsedSec),
+        elapsedMinutes: parseFloat(elapsedMin),
+      },
+      tokens: {
+        promptTokens: totals.promptTokens,
+        completionTokens: totals.completionTokens,
+        totalTokens: totals.totalTokens,
+        tokensPerSecond,
+        avgTokensPerRequest,
+      },
+      cost: {
+        totalUsd: parseFloat(totals.costUsd.toFixed(4)),
+        breakdown: perModelBreakdown.filter((m) => m.costUsd > 0),
+      },
+      requests: {
+        total: totals.requests,
+        byModel: perModelBreakdown,
+      },
+      pages: {
+        total: this.pageStats.total || (this.pageStats.success + this.pageStats.error + this.pageStats.cached),
+        success: this.pageStats.success,
+        error: this.pageStats.error,
+        cached: this.pageStats.cached,
+        empty: this.pageStats.empty,
+        visionRetried: this.pageStats.visionRetried,
+        byType: this.pageStats.byType,
+      },
+    };
+  }
+}
+
+/**
+ * Print a formatted run report to console and log file.
+ * @param {object} report - Report object from RunStats.generateReport()
+ * @param {string} [outputDir] - If provided, also saves report as JSON file
+ */
+function printRunReport(report, outputDir = null) {
+  const lines = [
+    '',
+    '╔══════════════════════════════════════════════════════════════╗',
+    '║                     📊 RUN REPORT                          ║',
+    '╚══════════════════════════════════════════════════════════════╝',
+    '',
+    `⏱️  Duration: ${report.timing.elapsedSeconds}s (${report.timing.elapsedMinutes} min)`,
+    '',
+    '── Tokens ──────────────────────────────────────────────────────',
+    `   Prompt:     ${report.tokens.promptTokens.toLocaleString()} tokens`,
+    `   Completion: ${report.tokens.completionTokens.toLocaleString()} tokens`,
+    `   Total:      ${report.tokens.totalTokens.toLocaleString()} tokens`,
+    `   Throughput: ${report.tokens.tokensPerSecond.toLocaleString()} tok/s`,
+    `   Avg/req:    ${report.tokens.avgTokensPerRequest.toLocaleString()} tokens`,
+    '',
+    '── Cost ────────────────────────────────────────────────────────',
+    `   Total: $${report.cost.totalUsd.toFixed(4)} USD`,
+  ];
+
+  if (report.cost.breakdown.length > 0) {
+    for (const item of report.cost.breakdown) {
+      lines.push(`     ├─ ${item.provider}/${item.model}: $${item.costUsd.toFixed(4)}`);
+    }
+  }
+
+  lines.push(
+    '',
+    '── Requests ────────────────────────────────────────────────────',
+    `   Total: ${report.requests.total}`,
+  );
+  for (const item of report.requests.byModel) {
+    lines.push(
+      `     ├─ ${item.provider}/${item.model}: ${item.requests} reqs (${item.totalTokens.toLocaleString()} tok)`,
+    );
+  }
+
+  lines.push(
+    '',
+    '── Pages ───────────────────────────────────────────────────────',
+    `   Success: ${report.pages.success}  |  Error: ${report.pages.error}  |  Cached: ${report.pages.cached}`,
+    `   Empty: ${report.pages.empty}  |  Vision retried: ${report.pages.visionRetried}`,
+  );
+
+  const typeEntries = Object.entries(report.pages.byType);
+  if (typeEntries.length > 0) {
+    lines.push('   Page types:');
+    for (const [type, count] of typeEntries.sort((a, b) => b[1] - a[1])) {
+      lines.push(`     ├─ ${type}: ${count}`);
+    }
+  }
+
+  lines.push('');
+
+  // Print to console
+  for (const line of lines) {
+    log('info', line);
+  }
+
+  // Save report JSON
+  if (outputDir) {
+    const reportPath = path.join(outputDir, 'llm', 'run_report.json');
+    try {
+      fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+      log('info', `📄 Run report saved: ${reportPath}`);
+    } catch (err) {
+      log('warn', `⚠️ Failed to save run report: ${err.message}`);
+    }
+  }
+}
+
+/** Global singleton run stats — populated by all LLM clients and pipeline steps. */
+const RUN_STATS = new RunStats();
 
 // ============================================================================
 // LOGGING UTILITY
@@ -982,6 +1368,20 @@ class GeminiClient extends BaseLLMClient {
 
     this.requestCount++;
 
+    // Track token usage for run report
+    const usageMeta = data.usageMetadata;
+    if (usageMeta) {
+      RUN_STATS.trackRequest(
+        'gemini',
+        this.model,
+        usageMeta.promptTokenCount || 0,
+        usageMeta.candidatesTokenCount || 0,
+      );
+    } else {
+      // No usage metadata — count the request anyway (0 tokens)
+      RUN_STATS.trackRequest('gemini', this.model, 0, 0);
+    }
+
     // Try to parse response, with recovery for truncated JSON
     try {
       return this.parseJsonResponse(text);
@@ -1442,6 +1842,54 @@ class GitHubModelsClient extends BaseLLMClient {
   }
 
   /**
+   * Track token usage from a successful API response
+   * @param {object} data - API response data
+   * @private
+   */
+  trackUsage(data) {
+    const usage = data.usage;
+    const prompt = usage ? usage.prompt_tokens || 0 : 0;
+    const completion = usage ? usage.completion_tokens || 0 : 0;
+    RUN_STATS.trackRequest('github-models', this.model, prompt, completion);
+  }
+
+  /**
+   * Handle non-OK response: rate limits, server errors, other errors
+   * @param {globalThis.Response} response - Fetch response
+   * @param {number} attempt - Current attempt number
+   * @returns {Promise<'continue'|'throw'>} Action to take
+   * @throws {Error} On unrecoverable errors
+   * @private
+   */
+  async handleErrorResponse(response, attempt) {
+    const errorText = await response.text();
+
+    if (response.status === 429) {
+      const action = await this.handleRateLimitFromText(errorText, attempt);
+      if (action === 'retry' || action === 'wait') return 'continue';
+      throw new Error(
+        `All GitHub Models exhausted (daily limits). Models tried: ${Array.from(this.exhaustedModels).join(', ')}`,
+      );
+    }
+
+    if (this.isServerError(response.status) && attempt < this.maxRetries) {
+      const delay = MERGE_CONFIG.CONNECTION_BASE_DELAY_MS * attempt;
+      log(
+        'warn',
+        `⚠️ GitHub Models server error (${response.status}), retrying in ${delay}ms (${attempt}/${this.maxRetries})...`,
+      );
+      await this.sleep(delay);
+      return 'continue';
+    }
+
+    if (this.isServerError(response.status)) {
+      throw new Error(`GitHub Models server error after ${this.maxRetries} retries: ${response.status}`);
+    }
+
+    throw new Error(`GitHub Models API error (${this.model}): ${response.status} - ${errorText}`);
+  }
+
+  /**
    * Generate with retry logic for rate limits
    * @param {string} prompt - User prompt
    * @param {string | null} systemInstruction - System instruction
@@ -1456,38 +1904,14 @@ class GitHubModelsClient extends BaseLLMClient {
 
         if (response.ok) {
           const data = await response.json();
+          this.trackUsage(data);
           const text = data.choices?.[0]?.message?.content;
           if (!text) throw new Error('Empty response from GitHub Models');
           return this.parseJsonResponse(text);
         }
 
-        const errorText = await response.text();
-
-        if (response.status === 429) {
-          const action = await this.handleRateLimitFromText(errorText, attempt);
-          if (action === 'retry' || action === 'wait') continue;
-
-          // All models exhausted
-          throw new Error(
-            `All GitHub Models exhausted (daily limits). Models tried: ${Array.from(this.exhaustedModels).join(', ')}`,
-          );
-        }
-
-        // Handle server errors (5xx) - retry these
-        if (this.isServerError(response.status)) {
-          if (attempt < this.maxRetries) {
-            const delay = MERGE_CONFIG.CONNECTION_BASE_DELAY_MS * attempt;
-            log(
-              'warn',
-              `⚠️ GitHub Models server error (${response.status}), retrying in ${delay}ms (${attempt}/${this.maxRetries})...`,
-            );
-            await this.sleep(delay);
-            continue;
-          }
-          throw new Error(`GitHub Models server error after ${this.maxRetries} retries: ${response.status}`);
-        }
-
-        throw new Error(`GitHub Models API error (${this.model}): ${response.status} - ${errorText}`);
+        const action = await this.handleErrorResponse(response, attempt);
+        if (action === 'continue') continue;
       } catch (err) {
         // Retry on connection/timeout errors (using isRetryableError for unified logic)
         if (attempt < this.maxRetries && this.isRetryableError(err)) {
@@ -1633,6 +2057,12 @@ class AzureOpenAIClient extends BaseLLMClient {
         }
 
         const data = await response.json();
+        // Track token usage for run report
+        if (data.usage) {
+          RUN_STATS.trackRequest('azure-openai', this.deployment, data.usage.prompt_tokens || 0, data.usage.completion_tokens || 0);
+        } else {
+          RUN_STATS.trackRequest('azure-openai', this.deployment, 0, 0);
+        }
         const text = data.choices?.[0]?.message?.content;
 
         if (!text) {
@@ -1743,6 +2173,12 @@ class OpenAIClient extends BaseLLMClient {
         }
 
         const data = await response.json();
+        // Track token usage for run report
+        if (data.usage) {
+          RUN_STATS.trackRequest('openai', this.model, data.usage.prompt_tokens || 0, data.usage.completion_tokens || 0);
+        } else {
+          RUN_STATS.trackRequest('openai', this.model, 0, 0);
+        }
         const text = data.choices?.[0]?.message?.content;
 
         if (!text) {
@@ -1863,6 +2299,18 @@ class OpenRouterClient extends BaseLLMClient {
     // Log finish_reason for debugging truncation issues
     if (finishReason !== 'stop') {
       log('warn', `⚠️ OpenRouter response finish_reason: ${finishReason} (expected: stop)`);
+    }
+
+    // Track token usage for run report
+    if (data.usage) {
+      RUN_STATS.trackRequest(
+        'openrouter',
+        this.model,
+        data.usage.prompt_tokens || 0,
+        data.usage.completion_tokens || 0,
+      );
+    } else {
+      RUN_STATS.trackRequest('openrouter', this.model, 0, 0);
     }
 
     if (!text) {
@@ -2094,6 +2542,8 @@ class OllamaClient extends BaseLLMClient {
         }
 
         const data = await response.json();
+        // Track token usage for run report (Ollama fields)
+        RUN_STATS.trackRequest('ollama', this.model, data.prompt_eval_count || 0, data.eval_count || 0);
         const text = data.response;
 
         if (!text) {
@@ -3757,10 +4207,13 @@ async function processIndividualPages(client, pagesToProcess, ocrDir, summariesD
       try {
         const summary = await processPage(client, pageNumber, ocrData, renderPagesDir, visionClient);
         savePageCache(summariesDir, pageNumber, summary);
+        RUN_STATS.trackPage(summary.pageType, summary.pageType === 'error' ? 'error' : 'success');
+        if (summary.pageType === 'empty') RUN_STATS.pageStats.empty++;
         log('info', `✅ Page ${pageNumber} analyzed`);
         return summary;
       } catch (err) {
         log('error', `Page ${pageNumber} failed: ${err.message}`);
+        RUN_STATS.trackPage('error', 'error');
         const errorSummary = {
           pageNumber,
           pageType: 'error',
@@ -3867,6 +4320,7 @@ function saveSynthesisResults(synthesis, llmDir, outputDir, stats, allPages = nu
   const manifestPath = path.join(outputDir, 'manifest.json');
   if (fs.existsSync(manifestPath)) {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+    const runReport = RUN_STATS.generateReport();
     manifest.llm = {
       provider: stats.providerName,
       model: stats.model,
@@ -3877,6 +4331,13 @@ function saveSynthesisResults(synthesis, llmDir, outputDir, stats, allPages = nu
       errorPages: stats.errorCount,
       cachedPages: stats.cachedCount,
       completedAt: new Date().toISOString(),
+      // Run report data
+      totalRequests: runReport.requests.total,
+      totalTokens: runReport.tokens.totalTokens,
+      promptTokens: runReport.tokens.promptTokens,
+      completionTokens: runReport.tokens.completionTokens,
+      costUsd: runReport.cost.totalUsd,
+      elapsedSeconds: runReport.timing.elapsedSeconds,
     };
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
   }
@@ -3912,6 +4373,7 @@ async function retryEmptyPagesWithVision(pageSummaries, summariesDir, outputDir)
       const idx = pageSummaries.findIndex((p) => p.pageNumber === pageNumber);
       if (idx !== -1) pageSummaries[idx] = result;
       savePageCache(summariesDir, pageNumber, result);
+      RUN_STATS.pageStats.visionRetried++;
       log('info', `✅ Page ${pageNumber} analyzed via Vision`);
     } catch (err) {
       log('warn', `⚠️  Vision failed for page ${pageNumber}: ${err.message.slice(0, 80)}`);
@@ -3976,6 +4438,9 @@ async function main() {
   // Initialize file logging for debugging
   initFileLogging(outputDir);
 
+  // Fetch latest model pricing (for accurate cost tracking in run report)
+  await refreshPricing();
+
   // Initialize LLM client
   const client = createLLMClient();
   const providerName = process.env.LLM_PROVIDER || 'gemini';
@@ -4016,6 +4481,9 @@ async function main() {
     log('error', '   Merging with missing pages would produce incomplete/unreliable output.');
     log('error', '   Fix the errors above (check network/API quota) and re-run.');
     log('error', '   Tip: Successfully extracted pages are cached - only failed pages will be re-processed.');
+    // Still print partial report on abort
+    const runReport = RUN_STATS.generateReport();
+    printRunReport(runReport, outputDir);
     await closeFileLogging();
     process.exit(1);
   }
@@ -4058,8 +4526,15 @@ async function main() {
       allPages,
       pageSummaries,
     );
+
+    // Generate and print run report
+    const runReport = RUN_STATS.generateReport();
+    printRunReport(runReport, outputDir);
   } catch (err) {
     log('error', `Merge synthesis failed: ${err.message}`);
+    // Still print partial report on failure
+    const runReport = RUN_STATS.generateReport();
+    printRunReport(runReport, outputDir);
     await closeFileLogging();
     process.exit(1);
   }
