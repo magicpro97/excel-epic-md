@@ -907,6 +907,36 @@ class GeminiClient extends BaseLLMClient {
   }
 
   /**
+   * Generate response using Vision (image + text) for pages with no OCR blocks.
+   * Used as fallback for sheets containing embedded UI screenshots/mockups.
+   * @param {string} imagePath - Absolute path to PNG file
+   * @param {string} prompt - Text prompt
+   * @param {string|null} systemInstruction - System instruction
+   * @returns {Promise<object>} Parsed JSON response
+   */
+  async generateVision(imagePath, prompt, systemInstruction = null) {
+    const imageData = fs.readFileSync(imagePath);
+    const base64Image = imageData.toString('base64');
+    const body = {
+      contents: [{
+        parts: [
+          { inlineData: { mimeType: 'image/png', data: base64Image } },
+          { text: prompt },
+        ],
+      }],
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: this.getMaxTokens(),
+        responseMimeType: 'application/json',
+      },
+    };
+    if (systemInstruction) {
+      body.systemInstruction = { parts: [{ text: systemInstruction }] };
+    }
+    return await this.generateNonStreaming(body, MERGE_CONFIG.ANTHROPIC_STYLE_MAX_RETRIES);
+  }
+
+  /**
    * Phase 1: Determine if streaming should be used for this request
    * @param {number} estimatedOutputTokens - Expected output tokens
    * @param {number} pageCount - Number of pages in request
@@ -2387,6 +2417,42 @@ QUAN TRỌNG:
 `;
 
 /**
+ * Vision prompt for pages with no OCR blocks (embedded screenshots/mockups)
+ * @param {number} pageNumber - Page number
+ * @returns {string} Prompt for vision-based page analysis
+ */
+const visionPagePrompt = (pageNumber) => `
+Đây là ảnh chụp trang ${pageNumber} của tài liệu yêu cầu phần mềm. Trang này chứa ảnh mockup/screenshot UI không thể đọc bằng OCR thông thường.
+
+Hãy phân tích hình ảnh và trích xuất tất cả nội dung text, requirements, UI elements hiển thị trong ảnh.
+Vì không có OCR blocks, hãy tự tạo Evidence ID với format EV-p${String(pageNumber).padStart(4, '0')}-v#### (v = vision).
+
+## Output Schema (JSON)
+{
+  "pageNumber": ${pageNumber},
+  "pageType": "cover|overview|requirement|detail|appendix|other",
+  "extractedInfo": {
+    "title": "string hoặc null",
+    "context": "string hoặc null",
+    "requirements": [
+      {
+        "id": "REQ-V${String(pageNumber).padStart(3, '0')}-001",
+        "description": "mô tả yêu cầu từ mockup",
+        "priority": "high|medium|low|unknown",
+        "evidenceIds": ["EV-p${String(pageNumber).padStart(4, '0')}-v0001"]
+      }
+    ],
+    "tasks": [],
+    "notes": ["ghi chú về UI elements nhìn thấy trong ảnh"],
+    "figures": ["mô tả mockup/screenshot"],
+    "tables": []
+  },
+  "ambiguousTexts": [],
+  "openQuestions": ["câu hỏi về phần không rõ trong mockup"]
+}
+`;
+
+/**
  * Generate batch extraction prompt for multiple pages
  * @param {Array<{pageNumber: number, blocks: Array<{evidenceId: string, text: string, isAmbiguous: boolean}>}>} pages - Array of page data
  * @returns {string} Prompt for batch processing
@@ -2665,13 +2731,32 @@ async function processBatchWithShrink(client, batch, summariesDir, depth = 0) {
  * @param {GeminiClient} client - Gemini API client
  * @param {number} pageNumber - Page number
  * @param {{ blocks: Array<object>, tables?: Array<object> }} ocrData - OCR data for the page
+ * @param {string|null} renderPagesDir - Path to render/pages/ dir for vision fallback
+ * @param {GeminiClient|null} visionClient - Dedicated vision client (Gemini) for 0-block pages
  * @returns {Promise<object>} Extracted page information
  */
-async function processPage(client, pageNumber, ocrData) {
+async function processPage(client, pageNumber, ocrData, renderPagesDir = null, visionClient = null) {
   log('debug', `🧠 Analyzing page ${pageNumber}...`);
 
   if (!ocrData.blocks || ocrData.blocks.length === 0) {
-    log('debug', `⚠️  Page ${pageNumber} has no text blocks`);
+    // Vision fallback: send PNG directly to Gemini when OCR found nothing
+    // This handles sheets with embedded UI screenshots/mockups
+    const usableVisionClient = visionClient || (typeof client.generateVision === 'function' ? client : null);
+    if (renderPagesDir && usableVisionClient) {
+      const imagePath = path.join(renderPagesDir, `page-${String(pageNumber).padStart(4, '0')}.png`);
+      if (fs.existsSync(imagePath)) {
+        try {
+          log('info', `🖼️  Page ${pageNumber}: 0 OCR blocks → using Vision fallback`);
+          const prompt = visionPagePrompt(pageNumber);
+          const result = await usableVisionClient.generateVision(imagePath, prompt, SYSTEM_INSTRUCTION);
+          log('info', `✅ Page ${pageNumber} analyzed via Vision`);
+          return result;
+        } catch (err) {
+          log('warn', `⚠️  Vision fallback failed for page ${pageNumber}: ${err.message.slice(0, 80)}`);
+        }
+      }
+    }
+    log('debug', `⚠️  Page ${pageNumber} has no text blocks (skipped)`);
     return {
       pageNumber,
       pageType: 'empty',
@@ -3643,6 +3728,20 @@ async function processIndividualPages(client, pagesToProcess, ocrDir, summariesD
   const concurrency = CONFIG.pageConcurrency;
   log('info', `📝 Using per-page processing (concurrency: ${concurrency})`);
   const results = [];
+  // Derive render/pages/ dir from ocrDir (sibling directory)
+  const renderPagesDir = path.join(path.dirname(ocrDir), 'render', 'pages');
+
+  // Vision client: use main client if it supports vision (Gemini), otherwise
+  // create a dedicated GeminiClient for vision-only fallback on 0-block pages
+  let visionClient = typeof client.generateVision === 'function' ? client : null;
+  if (!visionClient) {
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (geminiKey) {
+      const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+      visionClient = new GeminiClient(geminiKey, geminiModel);
+      log('info', '🖼️  Vision fallback client: Gemini (for 0-block pages)');
+    }
+  }
 
   // Process pages in parallel batches with concurrency limit
   for (let i = 0; i < pagesToProcess.length; i += concurrency) {
@@ -3656,7 +3755,7 @@ async function processIndividualPages(client, pagesToProcess, ocrDir, summariesD
       const ocrData = JSON.parse(fs.readFileSync(ocrPath, 'utf-8'));
 
       try {
-        const summary = await processPage(client, pageNumber, ocrData);
+        const summary = await processPage(client, pageNumber, ocrData, renderPagesDir, visionClient);
         savePageCache(summariesDir, pageNumber, summary);
         log('info', `✅ Page ${pageNumber} analyzed`);
         return summary;
@@ -3784,6 +3883,70 @@ function saveSynthesisResults(synthesis, llmDir, outputDir, stats, allPages = nu
 }
 
 /**
+ * Retry empty pages using Gemini Vision API.
+ * Replaces 'empty' page summaries in-place when a rendered PNG is available.
+ * @param {Array<object>} pageSummaries - Page summaries (mutated in place)
+ * @param {string} summariesDir - Cache directory for page summaries
+ * @param {string} outputDir - Root output directory (render/pages/ lives here)
+ * @returns {Promise<void>}
+ */
+async function retryEmptyPagesWithVision(pageSummaries, summariesDir, outputDir) {
+  const emptyPages = pageSummaries.filter((p) => p.pageType === 'empty');
+  if (emptyPages.length === 0) return;
+
+  const geminiKey = process.env.GEMINI_API_KEY;
+  const renderPagesDir = path.join(outputDir, 'render', 'pages');
+  if (!geminiKey || !fs.existsSync(renderPagesDir)) return;
+
+  const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  const visionClient = new GeminiClient(geminiKey, geminiModel);
+  log('info', `🖼️  Vision retry: ${emptyPages.length} empty page(s) → Gemini Vision`);
+
+  for (const emptyPage of emptyPages) {
+    const { pageNumber } = emptyPage;
+    const imagePath = path.join(renderPagesDir, `page-${String(pageNumber).padStart(4, '0')}.png`);
+    if (!fs.existsSync(imagePath)) continue;
+    try {
+      const prompt = visionPagePrompt(pageNumber);
+      const result = await visionClient.generateVision(imagePath, prompt, SYSTEM_INSTRUCTION);
+      const idx = pageSummaries.findIndex((p) => p.pageNumber === pageNumber);
+      if (idx !== -1) pageSummaries[idx] = result;
+      savePageCache(summariesDir, pageNumber, result);
+      log('info', `✅ Page ${pageNumber} analyzed via Vision`);
+    } catch (err) {
+      log('warn', `⚠️  Vision failed for page ${pageNumber}: ${err.message.slice(0, 80)}`);
+    }
+  }
+}
+
+/**
+ * Ensure tables from page summaries are preserved in the merged synthesis.
+ * The LLM merge step may drop or truncate tables due to output token limits,
+ * so we inject/supplement them deterministically from the per-page summaries.
+ * @param {object} synthesis - Merged synthesis result (mutated in place)
+ * @param {Array<object>} pageSummaries - Per-page summaries
+ * @returns {void}
+ */
+function reconcileTables(synthesis, pageSummaries) {
+  const mergedTables = synthesis.tables || [];
+  const pageTables = collectTablesFromPageSummaries(pageSummaries);
+
+  if (pageTables.length > 0 && mergedTables.length === 0) {
+    log('info', `📊 Injecting ${pageTables.length} tables from page summaries (merge LLM returned 0)`);
+    synthesis.tables = pageTables;
+  } else if (pageTables.length > mergedTables.length) {
+    log('info', `📊 Supplementing tables: merge has ${mergedTables.length}, pages have ${pageTables.length}`);
+    const existingTitles = new Set(mergedTables.map((t) => t.title?.toLowerCase()));
+    const newTables = pageTables.filter((t) => !existingTitles.has(t.title?.toLowerCase()));
+    synthesis.tables = [...mergedTables, ...newTables];
+  }
+
+  if (synthesis.tables?.length > 0) {
+    log('info', `📊 Final output: ${synthesis.tables.length} specification tables`);
+  }
+}
+
+/**
  * Main entry point
  * @returns {Promise<void>} Promise that resolves when synthesis completes
  */
@@ -3834,6 +3997,10 @@ async function main() {
     pageSummaries.push(...newResults);
   }
 
+  // Vision retry: re-process any 'empty' pages using Gemini Vision
+  // Handles sheets with embedded UI screenshots/mockups (0 OCR blocks)
+  await retryEmptyPagesWithVision(pageSummaries, summariesDir, outputDir);
+
   // Sort summaries by page number
   pageSummaries.sort((a, b) => a.pageNumber - b.pageNumber);
 
@@ -3871,23 +4038,8 @@ async function main() {
     const synthesis = await mergeSynthesis(effectiveMergeClient, pageSummaries, llmDir);
 
     // Ensure tables from page summaries are preserved in final synthesis
-    // LLM merge may drop/truncate tables due to output token limits,
-    // so we collect them directly from page summaries (deterministic, no LLM dependency)
-    const mergedTables = synthesis.tables || [];
-    const pageTables = collectTablesFromPageSummaries(pageSummaries);
-    if (pageTables.length > 0 && mergedTables.length === 0) {
-      log('info', `📊 Injecting ${pageTables.length} tables from page summaries (merge LLM returned 0)`);
-      synthesis.tables = pageTables;
-    } else if (pageTables.length > mergedTables.length) {
-      log('info', `📊 Supplementing tables: merge has ${mergedTables.length}, pages have ${pageTables.length}`);
-      // Merge LLM tables + page tables (deduplicate by title)
-      const existingTitles = new Set(mergedTables.map((t) => t.title?.toLowerCase()));
-      const newTables = pageTables.filter((t) => !existingTitles.has(t.title?.toLowerCase()));
-      synthesis.tables = [...mergedTables, ...newTables];
-    }
-    if (synthesis.tables?.length > 0) {
-      log('info', `📊 Final output: ${synthesis.tables.length} specification tables`);
-    }
+    // LLM merge may drop/truncate tables due to output token limits.
+    reconcileTables(synthesis, pageSummaries);
 
     saveSynthesisResults(
       synthesis,

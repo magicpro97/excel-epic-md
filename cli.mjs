@@ -115,11 +115,19 @@ async function runStep(stepName, inputPath, outputDir) {
   const [cmd, script] = scriptMap[stepName];
   const args = ['--input', stepName === 'render' ? inputPath : outputDir, '--output', outputDir];
 
+  // Auto-inject SSL cert bundle for FPT proxy bypass
+  const certBundle = path.join(__dirname, 'certs', 'ca-bundle.pem');
+  const sslEnv = {};
+  if (fs.existsSync(certBundle)) {
+    sslEnv.SSL_CERT_FILE = certBundle;
+    sslEnv.REQUESTS_CA_BUNDLE = certBundle;
+  }
+
   return new Promise((resolve, reject) => {
     const proc = spawn(cmd, [script, ...args], {
       stdio: 'inherit',
       cwd: __dirname,
-      env: { ...process.env },
+      env: { ...process.env, ...sslEnv },
     });
 
     proc.on('close', (code) => {
