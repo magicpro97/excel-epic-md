@@ -4850,10 +4850,7 @@ function applyVisionResult(table, result, pageNum) {
 
   const oldRowCount = table.markdownTable.split('\\n').filter((l) => l.trim().startsWith('|')).length;
   table.markdownTable = result.markdownTable;
-  table.notes = (table.notes || '').replace(/⚠️ MISALIGNED:.*$/, '').trim();
-  if (result.notes) {
-    table.notes = table.notes ? `${table.notes}\\n${result.notes}` : result.notes;
-  }
+  table.notes = (table.notes || '').replace(/⚠️ MISALIGNED:.*$/, '').trim() || undefined;
   delete table._misaligned;
   log('info', `  ✅ Vision fixed "${table.title}" (p${pageNum}): ${oldRowCount} → ${newLines.length} rows, ${result.columnCount || '?'} cols`);
   return true;
