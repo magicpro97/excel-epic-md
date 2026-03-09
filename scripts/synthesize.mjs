@@ -166,26 +166,26 @@ const GEMINI_QUOTA = {
  */
 const FALLBACK_PRICING = [
   // Gemini models
-  { pattern: /gemini-2\.5-pro/i,      provider: 'gemini', inputPer1M: 1.25,  outputPer1M: 5.00 },
-  { pattern: /gemini-2\.5-flash/i,    provider: 'gemini', inputPer1M: 0.15,  outputPer1M: 0.60 },
-  { pattern: /gemini-2\.0-flash/i,    provider: 'gemini', inputPer1M: 0.075, outputPer1M: 0.30 },
-  { pattern: /gemini-1\.5-pro/i,      provider: 'gemini', inputPer1M: 1.25,  outputPer1M: 5.00 },
-  { pattern: /gemini-1\.5-flash/i,    provider: 'gemini', inputPer1M: 0.075, outputPer1M: 0.30 },
+  { pattern: /gemini-2\.5-pro/i, provider: 'gemini', inputPer1M: 1.25, outputPer1M: 5.0 },
+  { pattern: /gemini-2\.5-flash/i, provider: 'gemini', inputPer1M: 0.15, outputPer1M: 0.6 },
+  { pattern: /gemini-2\.0-flash/i, provider: 'gemini', inputPer1M: 0.075, outputPer1M: 0.3 },
+  { pattern: /gemini-1\.5-pro/i, provider: 'gemini', inputPer1M: 1.25, outputPer1M: 5.0 },
+  { pattern: /gemini-1\.5-flash/i, provider: 'gemini', inputPer1M: 0.075, outputPer1M: 0.3 },
   // OpenAI direct
-  { pattern: /^gpt-4\.1-mini/i,      provider: 'openai', inputPer1M: 0.40,  outputPer1M: 1.60 },
-  { pattern: /^gpt-4\.1-nano/i,      provider: 'openai', inputPer1M: 0.10,  outputPer1M: 0.40 },
-  { pattern: /^gpt-4\.1/i,           provider: 'openai', inputPer1M: 2.00,  outputPer1M: 8.00 },
-  { pattern: /^gpt-4o-mini/i,        provider: 'openai', inputPer1M: 0.15,  outputPer1M: 0.60 },
-  { pattern: /^gpt-4o/i,             provider: 'openai', inputPer1M: 2.50,  outputPer1M: 10.00 },
-  { pattern: /^gpt-4-turbo/i,        provider: 'openai', inputPer1M: 10.00, outputPer1M: 30.00 },
-  { pattern: /^o3-mini/i,            provider: 'openai', inputPer1M: 1.10,  outputPer1M: 4.40 },
-  { pattern: /^o3/i,                 provider: 'openai', inputPer1M: 2.00,  outputPer1M: 8.00 },
-  { pattern: /^o4-mini/i,            provider: 'openai', inputPer1M: 1.10,  outputPer1M: 4.40 },
+  { pattern: /^gpt-4\.1-mini/i, provider: 'openai', inputPer1M: 0.4, outputPer1M: 1.6 },
+  { pattern: /^gpt-4\.1-nano/i, provider: 'openai', inputPer1M: 0.1, outputPer1M: 0.4 },
+  { pattern: /^gpt-4\.1/i, provider: 'openai', inputPer1M: 2.0, outputPer1M: 8.0 },
+  { pattern: /^gpt-4o-mini/i, provider: 'openai', inputPer1M: 0.15, outputPer1M: 0.6 },
+  { pattern: /^gpt-4o/i, provider: 'openai', inputPer1M: 2.5, outputPer1M: 10.0 },
+  { pattern: /^gpt-4-turbo/i, provider: 'openai', inputPer1M: 10.0, outputPer1M: 30.0 },
+  { pattern: /^o3-mini/i, provider: 'openai', inputPer1M: 1.1, outputPer1M: 4.4 },
+  { pattern: /^o3/i, provider: 'openai', inputPer1M: 2.0, outputPer1M: 8.0 },
+  { pattern: /^o4-mini/i, provider: 'openai', inputPer1M: 1.1, outputPer1M: 4.4 },
   // Anthropic Claude
-  { pattern: /claude-3-5-sonnet/i,   provider: 'anthropic', inputPer1M: 3.00,  outputPer1M: 15.00 },
-  { pattern: /claude-3-5-haiku/i,    provider: 'anthropic', inputPer1M: 0.80,  outputPer1M: 4.00 },
-  { pattern: /claude-3-opus/i,       provider: 'anthropic', inputPer1M: 15.00, outputPer1M: 75.00 },
-  { pattern: /claude-3-haiku/i,      provider: 'anthropic', inputPer1M: 0.25,  outputPer1M: 1.25 },
+  { pattern: /claude-3-5-sonnet/i, provider: 'anthropic', inputPer1M: 3.0, outputPer1M: 15.0 },
+  { pattern: /claude-3-5-haiku/i, provider: 'anthropic', inputPer1M: 0.8, outputPer1M: 4.0 },
+  { pattern: /claude-3-opus/i, provider: 'anthropic', inputPer1M: 15.0, outputPer1M: 75.0 },
+  { pattern: /claude-3-haiku/i, provider: 'anthropic', inputPer1M: 0.25, outputPer1M: 1.25 },
 ];
 
 /**
@@ -1307,12 +1307,11 @@ class GeminiClient extends BaseLLMClient {
     const imageData = fs.readFileSync(imagePath);
     const base64Image = imageData.toString('base64');
     const body = {
-      contents: [{
-        parts: [
-          { inlineData: { mimeType: 'image/png', data: base64Image } },
-          { text: prompt },
-        ],
-      }],
+      contents: [
+        {
+          parts: [{ inlineData: { mimeType: 'image/png', data: base64Image } }, { text: prompt }],
+        },
+      ],
       generationConfig: {
         temperature: 0.2,
         maxOutputTokens: this.getMaxTokens(),
@@ -2062,7 +2061,12 @@ class AzureOpenAIClient extends BaseLLMClient {
         const data = await response.json();
         // Track token usage for run report
         if (data.usage) {
-          RUN_STATS.trackRequest('azure-openai', this.deployment, data.usage.prompt_tokens || 0, data.usage.completion_tokens || 0);
+          RUN_STATS.trackRequest(
+            'azure-openai',
+            this.deployment,
+            data.usage.prompt_tokens || 0,
+            data.usage.completion_tokens || 0,
+          );
         } else {
           RUN_STATS.trackRequest('azure-openai', this.deployment, 0, 0);
         }
@@ -2178,7 +2182,12 @@ class OpenAIClient extends BaseLLMClient {
         const data = await response.json();
         // Track token usage for run report
         if (data.usage) {
-          RUN_STATS.trackRequest('openai', this.model, data.usage.prompt_tokens || 0, data.usage.completion_tokens || 0);
+          RUN_STATS.trackRequest(
+            'openai',
+            this.model,
+            data.usage.prompt_tokens || 0,
+            data.usage.completion_tokens || 0,
+          );
         } else {
           RUN_STATS.trackRequest('openai', this.model, 0, 0);
         }
@@ -2751,7 +2760,9 @@ class CopilotClient extends BaseLLMClient {
     if (!res.ok) {
       const errorText = await res.text();
       if (res.status === 401) {
-        throw new Error('Copilot OAuth token is invalid or expired. Delete ~/.config/github-copilot/hosts.json and re-authenticate.');
+        throw new Error(
+          'Copilot OAuth token is invalid or expired. Delete ~/.config/github-copilot/hosts.json and re-authenticate.',
+        );
       }
       throw new Error(`Copilot token exchange failed: ${res.status} — ${errorText.slice(0, 200)}`);
     }
@@ -4644,7 +4655,10 @@ async function processIndividualPages(client, pagesToProcess, ocrDir, summariesD
   for (let i = 0; i < pagesToProcess.length; i += concurrency) {
     const batch = pagesToProcess.slice(i, i + concurrency);
     const batchLabel = batch.map((p) => p.pageNumber).join(', ');
-    log('info', `🚀 Processing batch [${batchLabel}] (${Math.min(i + concurrency, pagesToProcess.length)}/${pagesToProcess.length})`);
+    log(
+      'info',
+      `🚀 Processing batch [${batchLabel}] (${Math.min(i + concurrency, pagesToProcess.length)}/${pagesToProcess.length})`,
+    );
 
     const batchPromises = batch.map(async (page) => {
       const { pageNumber } = page;
@@ -5047,7 +5061,10 @@ function flagBrokenTables(tables) {
       const warning = `⚠️ MISALIGNED: Bảng có ${uniquePipes.size} cấu trúc cột khác nhau (${[...uniquePipes].join(',')} pipes). OCR có thể đã parse sai cấu trúc bảng phức tạp.`;
       table.notes = table.notes ? `${table.notes}\n${warning}` : warning;
       table._misaligned = true;
-      log('warn', `  ⚠️ Misaligned table: "${table.title}" (${uniquePipes.size} pipe variations: ${[...uniquePipes].join(',')})`);
+      log(
+        'warn',
+        `  ⚠️ Misaligned table: "${table.title}" (${uniquePipes.size} pipe variations: ${[...uniquePipes].join(',')})`,
+      );
       flagged++;
     }
   }
@@ -5221,7 +5238,10 @@ function applyVisionResult(table, result, pageNum) {
   table.markdownTable = result.markdownTable;
   table.notes = (table.notes || '').replace(/⚠️ MISALIGNED:.*$/, '').trim() || undefined;
   delete table._misaligned;
-  log('info', `  ✅ Vision fixed "${table.title}" (p${pageNum}): ${oldRowCount} → ${newLines.length} rows, ${result.columnCount || '?'} cols`);
+  log(
+    'info',
+    `  ✅ Vision fixed "${table.title}" (p${pageNum}): ${oldRowCount} → ${newLines.length} rows, ${result.columnCount || '?'} cols`,
+  );
   return true;
 }
 

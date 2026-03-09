@@ -326,7 +326,9 @@ async function setFitToWidth(inputPath, outputPath) {
   console.log(`  ✅ Modified ${sheetNames.length} worksheets: ${displayNames}`);
 
   if (CONFIG.wrapText && wrapTextStats.totalCells > 0) {
-    console.log(`  📏 Enabled wrapText on ${wrapTextStats.totalCells.toLocaleString()} cells across ${wrapTextStats.sheets} sheets`);
+    console.log(
+      `  📏 Enabled wrapText on ${wrapTextStats.totalCells.toLocaleString()} cells across ${wrapTextStats.sheets} sheets`,
+    );
   }
 
   return { sheetCount: sheetNames.length, sheetNames };
@@ -633,9 +635,7 @@ async function stitchSheetPages(pagesDir, sheetsDir, mapping) {
       sourcePages.push(p);
     }
 
-    const pagePaths = sourcePages.map(
-      (p) => path.join(pagesDir, `page-${String(p).padStart(4, '0')}.png`),
-    );
+    const pagePaths = sourcePages.map((p) => path.join(pagesDir, `page-${String(p).padStart(4, '0')}.png`));
 
     // Verify all source pages exist
     const validPaths = pagePaths.filter((p) => fs.existsSync(p));
@@ -889,7 +889,9 @@ async function main() {
       console.log(`  📋 Sheet mapping: ${mapping.length} sheets across ${pages.length} pages`);
       for (const m of mapping) {
         const pCount = m.endPage - m.startPage + 1;
-        console.log(`    Sheet ${m.sheetIndex}: "${m.sheetName}" → pages ${m.startPage}-${m.endPage} (${pCount} page${pCount > 1 ? 's' : ''})`);
+        console.log(
+          `    Sheet ${m.sheetIndex}: "${m.sheetName}" → pages ${m.startPage}-${m.endPage} (${pCount} page${pCount > 1 ? 's' : ''})`,
+        );
       }
 
       // Stitch pages per sheet

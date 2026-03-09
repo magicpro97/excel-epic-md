@@ -21,8 +21,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PRICING_FILE = path.join(__dirname, 'model-pricing.json');
 
-const LITELLM_URL =
-  'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json';
+const LITELLM_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json';
 
 /**
  * Provider mapping from LiteLLM provider names to our provider keys.
@@ -33,7 +32,7 @@ const PROVIDER_MAP = {
   openai: 'openai',
   azure: 'azure-openai',
   'azure-openai': 'azure-openai',
-  'azure_ai': 'azure-openai',
+  azure_ai: 'azure-openai',
   anthropic: 'anthropic',
   'vertex_ai-anthropic_models': 'anthropic',
   gemini: 'gemini',
@@ -47,7 +46,7 @@ const PROVIDER_MAP = {
   fireworks_ai: 'fireworks',
   ollama: 'ollama',
   bedrock: 'bedrock',
-  'vertex_ai': 'gemini',
+  vertex_ai: 'gemini',
 };
 
 /**
@@ -58,17 +57,34 @@ const PROVIDER_MAP = {
  */
 const RELEVANT_PATTERNS = [
   // Gemini
-  'gemini-2.5', 'gemini-2.0', 'gemini-1.5',
+  'gemini-2.5',
+  'gemini-2.0',
+  'gemini-1.5',
   // OpenAI
-  'gpt-4o', 'gpt-4-turbo', 'gpt-4.1', 'gpt-4.5',
-  'o1-mini', 'o1-preview', 'o3-mini', 'o3', 'o4-mini',
+  'gpt-4o',
+  'gpt-4-turbo',
+  'gpt-4.1',
+  'gpt-4.5',
+  'o1-mini',
+  'o1-preview',
+  'o3-mini',
+  'o3',
+  'o4-mini',
   // Anthropic
-  'claude-3-5', 'claude-3.5', 'claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku',
-  'claude-sonnet-4', 'claude-opus-4',
+  'claude-3-5',
+  'claude-3.5',
+  'claude-3-opus',
+  'claude-3-sonnet',
+  'claude-3-haiku',
+  'claude-sonnet-4',
+  'claude-opus-4',
   // DeepSeek
-  'deepseek-chat', 'deepseek-r1', 'deepseek-v3',
+  'deepseek-chat',
+  'deepseek-r1',
+  'deepseek-v3',
   // Mistral
-  'mistral-large', 'mistral-small',
+  'mistral-large',
+  'mistral-small',
 ];
 
 /**
@@ -78,8 +94,16 @@ const RELEVANT_PATTERNS = [
  * @constant {Set<string>}
  */
 const EXCLUDED_PROVIDERS = new Set([
-  'wandb', 'gradient_ai', 'lambda_ai', 'nscale', 'gmi',
-  'volcengine', 'oci', 'llamagate', 'hyperbolic', 'sambanova',
+  'wandb',
+  'gradient_ai',
+  'lambda_ai',
+  'nscale',
+  'gmi',
+  'volcengine',
+  'oci',
+  'llamagate',
+  'hyperbolic',
+  'sambanova',
 ]);
 
 /**
@@ -131,7 +155,13 @@ function isRelevantModel(modelName) {
 function normalizeProvider(litellmProvider, modelName) {
   if (!litellmProvider) {
     // Infer from model name
-    if (modelName.startsWith('gpt-') || modelName.startsWith('o1') || modelName.startsWith('o3') || modelName.startsWith('o4')) return 'openai';
+    if (
+      modelName.startsWith('gpt-') ||
+      modelName.startsWith('o1') ||
+      modelName.startsWith('o3') ||
+      modelName.startsWith('o4')
+    )
+      return 'openai';
     if (modelName.includes('claude')) return 'anthropic';
     if (modelName.includes('gemini')) return 'gemini';
     if (modelName.includes('deepseek')) return 'deepseek';
@@ -381,10 +411,8 @@ async function main() {
 }
 
 // Only run CLI when executed directly (not imported)
-const isDirectRun = process.argv[1] && (
-  process.argv[1].endsWith('update-pricing.mjs') ||
-  process.argv[1].includes('update-pricing')
-);
+const isDirectRun =
+  process.argv[1] && (process.argv[1].endsWith('update-pricing.mjs') || process.argv[1].includes('update-pricing'));
 if (isDirectRun) {
   main();
 }

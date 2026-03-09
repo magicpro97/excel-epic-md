@@ -107,9 +107,15 @@ function applyOcrCorrections(text) {
  */
 const PRIORITY_KEYWORDS = [
   // HIGH: validation, error handling, required fields, security
-  { pattern: /必須|エラー|バリデーション|認証|セキュリティ|権限|ログイン|validation|error|required|security|auth/i, priority: 'high' },
+  {
+    pattern: /必須|エラー|バリデーション|認証|セキュリティ|権限|ログイン|validation|error|required|security|auth/i,
+    priority: 'high',
+  },
   // MEDIUM: display, output, conversion, import/export
-  { pattern: /表示|出力|変換|インポート|エクスポート|TSV|CSV|import|export|display|convert|更新|削除|登録/i, priority: 'medium' },
+  {
+    pattern: /表示|出力|変換|インポート|エクスポート|TSV|CSV|import|export|display|convert|更新|削除|登録/i,
+    priority: 'medium',
+  },
   // LOW: auto-generated, optional, cosmetic
   { pattern: /自動生成|任意|optional|デフォルト|default|表示順|order|自動/i, priority: 'low' },
 ];

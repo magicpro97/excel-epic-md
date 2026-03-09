@@ -290,7 +290,9 @@ async function main() {
       if (fs.existsSync(manifestPath)) {
         try {
           manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-        } catch { /* keep in-memory version */ }
+        } catch {
+          /* keep in-memory version */
+        }
       }
       manifest.steps = manifest.steps || {};
       manifest.steps[step] = { status: 'success', completedAt: new Date().toISOString() };
@@ -300,7 +302,9 @@ async function main() {
       if (fs.existsSync(manifestPath)) {
         try {
           manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-        } catch { /* keep in-memory version */ }
+        } catch {
+          /* keep in-memory version */
+        }
       }
       manifest.steps = manifest.steps || {};
       manifest.steps[step] = { status: 'failed', error: err.message };
