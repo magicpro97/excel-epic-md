@@ -25,7 +25,7 @@ function parseArgs() {
   const result = {
     input: null,
     output: path.join(__dirname, 'outputs'),
-    step: null, // null = all, or 'render', 'ocr', 'synthesize', 'assemble'
+    step: null, // null = all, or 'render', 'ocr', 'extract-ooxml', 'synthesize', 'assemble'
   };
 
   let i = 0;
@@ -108,12 +108,14 @@ async function runStep(stepName, inputPath, outputDir) {
   const scriptMap = {
     render: ['bun', path.join(__dirname, 'scripts/render.mjs')],
     ocr: [pythonPath, ocrScript],
+    'extract-ooxml': ['bun', path.join(__dirname, 'scripts/extract-ooxml.mjs')],
     synthesize: ['bun', path.join(__dirname, 'scripts/synthesize.mjs')],
     assemble: ['bun', path.join(__dirname, 'scripts/assemble.mjs')],
   };
 
   const [cmd, script] = scriptMap[stepName];
-  const args = ['--input', stepName === 'render' ? inputPath : outputDir, '--output', outputDir];
+  const stepInput = stepName === 'render' || stepName === 'extract-ooxml' ? inputPath : outputDir;
+  const args = ['--input', stepInput, '--output', outputDir];
 
   // Auto-inject SSL cert bundle for FPT proxy bypass
   const certBundle = path.join(__dirname, 'certs', 'ca-bundle.pem');
@@ -283,7 +285,54 @@ async function main() {
   // Run pipeline
   const steps = args.step ? [args.step] : ['render', 'ocr', 'synthesize', 'assemble'];
 
-  for (const step of steps) {
+  // Parallel group: ocr + extract-ooxml run simultaneously after render
+  const parallelSteps = new Set(['ocr', 'extract-ooxml']);
+
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+
+    // When hitting 'ocr', run it in parallel with extract-ooxml
+    if (step === 'ocr' && !args.step) {
+      const batch = ['ocr', 'extract-ooxml'];
+      try {
+        console.log(`\n🔀 Running parallel: ${batch.join(' + ')}`);
+        const results = await Promise.allSettled(batch.map((s) => runStep(s, inputPath, outputDir)));
+        // Re-read manifest
+        if (fs.existsSync(manifestPath)) {
+          try {
+            manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+          } catch {
+            /* keep in-memory */
+          }
+        }
+        manifest.steps = manifest.steps || {};
+        let ocrFailed = false;
+        for (let j = 0; j < batch.length; j++) {
+          const s = batch[j];
+          const r = results[j];
+          if (r.status === 'fulfilled') {
+            manifest.steps[s] = { status: 'success', completedAt: new Date().toISOString() };
+          } else {
+            manifest.steps[s] = { status: 'failed', error: r.reason?.message || String(r.reason) };
+            if (s === 'ocr') ocrFailed = true;
+            else console.warn(`\n⚠️  ${s} failed (non-fatal): ${r.reason?.message}`);
+          }
+        }
+        fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+        if (ocrFailed) {
+          console.error(`\n❌ Pipeline failed at step: ocr`);
+          process.exit(1);
+        }
+      } catch (err) {
+        console.error(`\n❌ Pipeline failed at parallel step: ${err.message}`);
+        process.exit(1);
+      }
+      continue;
+    }
+
+    // Skip extract-ooxml if already handled in parallel batch (not when running solo)
+    if (step === 'extract-ooxml' && !args.step) continue;
+
     try {
       await runStep(step, inputPath, outputDir);
       // Re-read manifest from disk after each step (step may have updated it)
