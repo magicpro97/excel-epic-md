@@ -9,12 +9,12 @@
  * Usage: bun scripts/extract-ooxml.mjs --input <xlsx> --output <outputDir>
  */
 
+import ExcelJS from 'exceljs';
+import { XMLParser } from 'fast-xml-parser';
+import JSZip from 'jszip';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import JSZip from 'jszip';
-import { XMLParser } from 'fast-xml-parser';
-import ExcelJS from 'exceljs';
 
 // ─── XML Namespaces ──────────────────────────────────────────────────────────
 const NS_DRAWING = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing';
@@ -29,10 +29,7 @@ const xmlParser = new XMLParser({
   removeNSPrefix: false,
   isArray: (name) => {
     // Elements that can appear multiple times
-    const arrayTags = [
-      'xdr:twoCellAnchor', 'xdr:oneCellAnchor', 'xdr:absoluteAnchor',
-      'a:r', 'a:p', 'Relationship',
-    ];
+    const arrayTags = ['xdr:twoCellAnchor', 'xdr:oneCellAnchor', 'xdr:absoluteAnchor', 'a:r', 'a:p', 'Relationship'];
     return arrayTags.includes(name);
   },
 });
@@ -44,7 +41,23 @@ function log(level, msg) {
   console.log(`[extract-ooxml] ${prefix} ${msg}`);
 }
 
-/** Extract all text from a DrawingML text body (a:txBody) */
+/**
+ * Classify ARGB color string to semantic name.
+ * Japanese spec convention: red = changed/added, blue = reference/note.
+ * @param {string|undefined} argb - ARGB hex string (e.g., "FFFF0000")
+ * @returns {string|null} 'red' | 'blue' | null
+ */
+function classifyColor(argb) {
+  if (!argb || argb === 'FF000000' || argb === '00000000') return null;
+  if (argb === 'FFFF0000' || argb === 'FF0000') return 'red';
+  if (argb.includes('0000FF') || argb.includes('0563C1')) return 'blue';
+  return null;
+}
+
+/**
+ * Extract all text from a DrawingML text body (a:txBody).
+ * Detects strikethrough in run properties (a:rPr) and wraps with ~~text~~.
+ */
 function extractTextFromTxBody(txBody) {
   if (!txBody) return '';
   const paragraphs = ensureArray(txBody['a:p']);
@@ -53,7 +66,13 @@ function extractTextFromTxBody(txBody) {
     const runs = ensureArray(p['a:r']);
     for (const r of runs) {
       const t = r?.['a:t'];
-      if (t != null) texts.push(typeof t === 'object' ? t['#text'] ?? '' : String(t));
+      if (t != null) {
+        const text = typeof t === 'object' ? (t['#text'] ?? '') : String(t);
+        const rPr = r?.['a:rPr'];
+        const strike = rPr?.['@_strike'];
+        const isStrike = strike === 'sngStrike' || strike === 'dblStrike';
+        texts.push(isStrike ? `~~${text}~~` : text);
+      }
     }
   }
   return texts.join(' ').trim();
@@ -129,9 +148,7 @@ async function parseSheetDrawingMap(zip) {
       if (type.includes('/drawing')) {
         const target = rel['@_Target'];
         // Target is relative: ../drawings/drawing1.xml
-        const drawingPath = target.startsWith('..')
-          ? `xl/${target.replace('../', '')}`
-          : `xl/drawings/${target}`;
+        const drawingPath = target.startsWith('..') ? `xl/${target.replace('../', '')}` : `xl/drawings/${target}`;
         map.set(sheetNum, drawingPath);
       }
     }
@@ -159,9 +176,7 @@ async function parseDrawingMediaMap(zip, drawingPath) {
     if (type.includes('/image')) {
       const rId = rel['@_Id'];
       const target = rel['@_Target'];
-      const mediaPath = target.startsWith('..')
-        ? `xl/${target.replace('../', '')}`
-        : `${drawingDir}/${target}`;
+      const mediaPath = target.startsWith('..') ? `xl/${target.replace('../', '')}` : `${drawingDir}/${target}`;
       map.set(rId, mediaPath);
     }
   }
@@ -187,10 +202,7 @@ async function extractDrawing(zip, drawingPath) {
   const mediaMap = await parseDrawingMediaMap(zip, drawingPath);
 
   // Process twoCellAnchor elements (most common)
-  const anchors = [
-    ...ensureArray(root?.['xdr:twoCellAnchor']),
-    ...ensureArray(root?.['xdr:oneCellAnchor']),
-  ];
+  const anchors = [...ensureArray(root?.['xdr:twoCellAnchor']), ...ensureArray(root?.['xdr:oneCellAnchor'])];
 
   for (const anchor of anchors) {
     const pos = extractPosition(anchor);
@@ -283,13 +295,45 @@ async function extractCellValues(xlsxPath) {
         const address = cell.address ?? `${String.fromCharCode(64 + colNumber)}${rowNumber}`;
         const isMerged = mergedRanges.some((r) => r.includes(address));
 
-        cells.push({
+        // Extract formatting metadata (strikethrough, color)
+        const formatting = {};
+        const font = cell.font || {};
+
+        if (font.strike) formatting.strike = true;
+        const cellColor = classifyColor(font.color?.argb);
+        if (cellColor) formatting.color = cellColor;
+
+        // RichText per-run formatting (partial strikethrough, mixed colors)
+        if (value.richText) {
+          const hasRunFormatting = value.richText.some((rt) => {
+            const f = rt.font || {};
+            return f.strike || classifyColor(f.color?.argb);
+          });
+          if (hasRunFormatting) {
+            formatting.richText = value.richText.map((rt) => {
+              const f = rt.font || {};
+              const flags = [];
+              if (f.strike) flags.push('strike');
+              const c = classifyColor(f.color?.argb);
+              if (c) flags.push(c);
+              return { text: rt.text, flags };
+            });
+          }
+        }
+
+        const cellData = {
           address,
           row: rowNumber,
           col: colNumber,
           value: displayValue,
           merged: isMerged,
-        });
+        };
+
+        if (Object.keys(formatting).length > 0) {
+          cellData.formatting = formatting;
+        }
+
+        cells.push(cellData);
       });
     });
 
@@ -343,7 +387,9 @@ async function extractOoxml(xlsxPath, outputDir) {
     try {
       const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
       sheetNames = manifest.render?.sheetNames ?? manifest.sheets?.map((s) => s.sheetName) ?? [];
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
 
   // ── Step 4: Map sheets to drawings ──
@@ -363,7 +409,10 @@ async function extractOoxml(xlsxPath, outputDir) {
     totalPictures += drawing.pictures.length;
 
     const sheetName = sheetNames[sheetIdx - 1] ?? `Sheet${sheetIdx}`;
-    log('info', `  Sheet ${sheetIdx} (${sheetName}): ${drawing.shapes.length} shapes, ${drawing.connectors.length} connectors, ${drawing.pictures.length} pictures`);
+    log(
+      'info',
+      `  Sheet ${sheetIdx} (${sheetName}): ${drawing.shapes.length} shapes, ${drawing.connectors.length} connectors, ${drawing.pictures.length} pictures`,
+    );
 
     sheetsOoxml.push({
       sheetIndex: sheetIdx,
@@ -376,7 +425,10 @@ async function extractOoxml(xlsxPath, outputDir) {
   let cellSheets = [];
   try {
     cellSheets = await extractCellValues(xlsxPath);
-    log('info', `Cell extraction: ${cellSheets.reduce((s, sh) => s + sh.cells.length, 0)} cells from ${cellSheets.length} sheets`);
+    log(
+      'info',
+      `Cell extraction: ${cellSheets.reduce((s, sh) => s + sh.cells.length, 0)} cells from ${cellSheets.length} sheets`,
+    );
   } catch (err) {
     log('warn', `Cell extraction failed: ${err.message}`);
   }
@@ -450,7 +502,10 @@ async function extractOoxml(xlsxPath, outputDir) {
   // ── Step 11: Update manifest ──
   updateManifest(outputDir, summary);
 
-  log('info', `Done: ${totalShapes} shapes (${results.reduce((s, r) => s + r.shapes.filter((sh) => sh.hasText).length, 0)} with text), ${totalConnectors} connectors, ${totalPictures} pictures, ${summary.totalCells} cells`);
+  log(
+    'info',
+    `Done: ${totalShapes} shapes (${results.reduce((s, r) => s + r.shapes.filter((sh) => sh.hasText).length, 0)} with text), ${totalConnectors} connectors, ${totalPictures} pictures, ${summary.totalCells} cells`,
+  );
 }
 
 function writeEmptyOutput(ooxmlDir, outputDir, reason) {
@@ -477,7 +532,9 @@ function updateManifest(outputDir, ooxmlSummary) {
     if (fs.existsSync(manifestPath)) {
       manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
     }
-  } catch { /* fresh manifest */ }
+  } catch {
+    /* fresh manifest */
+  }
 
   manifest.ooxml = {
     status: ooxmlSummary.status,

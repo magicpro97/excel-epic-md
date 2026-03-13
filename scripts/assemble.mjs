@@ -76,6 +76,10 @@ const OCR_CORRECTIONS = [
   { pattern: /ログイ一ザ/g, replacement: 'ログインユーザ' },
   { pattern: /ログイ-ザ/g, replacement: 'ログインユーザ' },
   { pattern: /ログインーザー/g, replacement: 'ログインユーザー' },
+  // Date format: remove struck-through milliseconds (.sss) from spec
+  { pattern: /yyyy\/mm\/dd hh:mm:ss\.sss/gi, replacement: 'yyyy/mm/dd hh:mm:ss' },
+  { pattern: /yyyy\/MM\/dd HH:mm:ss\.sss/g, replacement: 'yyyy/MM/dd HH:mm:ss' },
+  { pattern: /yyyy\/MM\/dd HH:mm:ss\.SSS/g, replacement: 'yyyy/MM/dd HH:mm:ss' },
 ];
 
 /**
@@ -380,6 +384,10 @@ ${formatRequirements(synthesis.requirements?.filter((r) => r.category === 'non-f
 ### 2.3 Constraints
 
 ${formatRequirements(synthesis.requirements?.filter((r) => r.category === 'constraint'))}
+
+### 2.4 Technical Requirements
+
+${formatRequirements(synthesis.requirements?.filter((r) => r.category === 'technical'))}
 
 ---
 

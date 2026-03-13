@@ -15,34 +15,34 @@ import path from 'path';
 // Config & utilities
 import { CONFIG } from '../lib/config/config.mjs';
 import { refreshPricing } from '../lib/config/pricing.mjs';
-import { log, initFileLogging, closeFileLogging } from '../lib/utils/logger.mjs';
-import { parseArgs } from '../lib/utils/helpers.mjs';
 import { RUN_STATS, printRunReport } from '../lib/stats/run-stats.mjs';
+import { parseArgs } from '../lib/utils/helpers.mjs';
+import { closeFileLogging, initFileLogging, log } from '../lib/utils/logger.mjs';
 
 // LLM clients
-import { GitHubModelsClient } from '../lib/llm-clients/github-models-client.mjs';
 import { createLLMClient, createMergeClient } from '../lib/llm-clients/client-factory.mjs';
+import { GitHubModelsClient } from '../lib/llm-clients/github-models-client.mjs';
 
 // Data loaders
+import { preparePageCache } from '../lib/loaders/cache-loader.mjs';
 import { loadOcrFiles } from '../lib/loaders/ocr-loader.mjs';
 import { loadOoxmlData } from '../lib/loaders/ooxml-loader.mjs';
-import { preparePageCache } from '../lib/loaders/cache-loader.mjs';
 
 // Processing pipeline
-import { processIndividualPages } from '../lib/processing/page-processor.mjs';
 import { processBatchPages } from '../lib/processing/batch-processor.mjs';
+import { processIndividualPages } from '../lib/processing/page-processor.mjs';
 import { retryEmptyPagesWithVision } from '../lib/processing/vision-retry.mjs';
 
 // Merge & post-processing
 import { mergeSynthesis } from '../lib/merge/merge-synthesis.mjs';
-import { reconcileTables } from '../lib/tables/table-reconciler.mjs';
 import { saveSynthesisResults } from '../lib/output/synthesis-saver.mjs';
+import { reconcileTables } from '../lib/tables/table-reconciler.mjs';
 
 async function main() {
   const args = parseArgs();
 
   if (!args.output) {
-    console.error('Usage: node synthesize.mjs --output <outputDir> [--force]');
+    console.error('Usage: node synthesize.mjs --output <outputDir> [--force] [--merge-only]');
     process.exit(1);
   }
 
@@ -64,6 +64,13 @@ async function main() {
   // Initialize file logging for debugging
   initFileLogging(outputDir);
 
+  // Clear chunk cache when --force is used (prevents stale merge results)
+  const chunkCachePath = path.join(llmDir, 'chunk_results.json');
+  if (args.force && fs.existsSync(chunkCachePath)) {
+    log('info', '🗑️  --force: clearing chunk_results.json cache');
+    fs.unlinkSync(chunkCachePath);
+  }
+
   // Fetch latest model pricing (for accurate cost tracking in run report)
   await refreshPricing();
 
@@ -79,9 +86,37 @@ async function main() {
   // Load OOXML data (from extract-ooxml stage)
   const ooxmlData = loadOoxmlData(path.dirname(ocrDir));
 
+  // --merge-only: skip page processing, load all cached summaries directly
+  if (args.mergeOnly) {
+    log('info', '⏩ --merge-only: skipping page processing, loading cached summaries...');
+    const summaryFiles = fs
+      .readdirSync(summariesDir)
+      .filter((f) => f.endsWith('.json'))
+      .sort();
+    if (summaryFiles.length === 0) {
+      log('error', '❌ No cached page summaries found. Run without --merge-only first.');
+      await closeFileLogging();
+      process.exit(1);
+    }
+    const pageSummaries = summaryFiles.map((f) => {
+      return JSON.parse(fs.readFileSync(path.join(summariesDir, f), 'utf-8'));
+    });
+    pageSummaries.sort((a, b) => a.pageNumber - b.pageNumber);
+    log('info', `📄 Loaded ${pageSummaries.length} cached page summaries`);
+
+    // Jump directly to merge
+    await runMerge(client, providerName, pageSummaries, allPages, llmDir, ocrDir, outputDir, 0);
+    await closeFileLogging();
+    return;
+  }
+
   // Prepare cache and pages to process (OOXML-aware invalidation)
   const { pageSummaries, pagesToProcess, cachedCount } = preparePageCache(
-    allPages, summariesDir, args.force, ooxmlData, path.dirname(ocrDir),
+    allPages,
+    summariesDir,
+    args.force,
+    ooxmlData,
+    path.dirname(ocrDir),
   );
 
   // Process pages if any remain
@@ -118,6 +153,14 @@ async function main() {
   }
 
   // Pass 2: Merge synthesis
+  await runMerge(client, providerName, pageSummaries, allPages, llmDir, ocrDir, outputDir, cachedCount);
+  await closeFileLogging();
+}
+
+/**
+ * Run merge synthesis (Pass 2): chunk → merge → reconcile → save
+ */
+async function runMerge(client, providerName, pageSummaries, allPages, llmDir, ocrDir, outputDir, cachedCount) {
   log('info', '\n🔄 Running merge synthesis...');
 
   const { client: mergeClient, provider: mergeProvider, model: mergeModel } = await createMergeClient();
@@ -128,6 +171,9 @@ async function main() {
   if (mergeClient) {
     log('info', `🔀 Using separate merge client: ${mergeProvider} (${mergeModel})`);
   }
+
+  const successCount = pageSummaries.filter((p) => p.pageType !== 'error').length;
+  const errorCount = pageSummaries.filter((p) => p.pageType === 'error').length;
 
   try {
     const synthesis = await mergeSynthesis(effectiveMergeClient, pageSummaries, llmDir);
@@ -158,11 +204,8 @@ async function main() {
     log('error', `Merge synthesis failed: ${err.message}`);
     const runReport = RUN_STATS.generateReport();
     printRunReport(runReport, outputDir);
-    await closeFileLogging();
-    process.exit(1);
+    throw err;
   }
-
-  await closeFileLogging();
 }
 
 main().catch(async (err) => {
