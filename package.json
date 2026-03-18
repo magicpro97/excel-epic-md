@@ -11,6 +11,7 @@
     "synthesize": "bun scripts/synthesize.mjs",
     "extract-ooxml": "bun scripts/extract-ooxml.mjs",
     "assemble": "bun scripts/assemble.mjs",
+    "issues-report": "bun scripts/issues-report.mjs",
     "update-pricing": "bun scripts/update-pricing.mjs",
     "pricing-stats": "bun scripts/update-pricing.mjs --stats"
   },
